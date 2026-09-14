@@ -1,0 +1,1434 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GPT-6 Astra 技术架构 · 3D 教学图（官方公开信息版）</title>
+<style>
+  :root{
+    --bg:#000000; --tx:#F2F4F7; --tx2:#8A93A3; --tx3:#5B6472;
+    --line:rgba(255,255,255,.10); --line2:rgba(255,255,255,.055);
+    --red:#EF4444;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Helvetica Neue",Arial,sans-serif;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--tx);font-family:var(--sans);
+       display:flex;flex-direction:column;overflow:hidden;-webkit-font-smoothing:antialiased;
+       /* 整页禁止文字选择：拖动是用来转视角/平移的，扫过标注会把文字高亮成一片蓝，
+          既是视觉污染也会让人以为页面选中了什么东西。只有面板正文允许复制。 */
+       -webkit-user-select:none;-moz-user-select:none;user-select:none}
+  /* 需要复制的内容例外：详情面板正文 */
+  .p-body{-webkit-user-select:text;-moz-user-select:text;user-select:text}
+  /* 拖动时不要触发原生拖拽（文字/图片被拖走的残影） */
+  #stage,#labels,#demoHud,header,footer{-webkit-user-drag:none}
+
+  header{flex:0 0 auto;padding:13px 24px 10px;border-bottom:1px solid var(--line2);
+         display:flex;align-items:flex-start;gap:24px}
+  .h-left{flex:0 0 auto;max-width:56%}
+  h1{margin:0;font-size:18px;font-weight:650;letter-spacing:.2px}
+  h1 .v{color:var(--red)}
+  .sub{margin-top:5px;font-size:11px;color:var(--tx2);line-height:1.55}
+  .sub code{font-family:var(--mono);font-size:10px;color:#C9D1DC;background:rgba(255,255,255,.05);padding:1px 5px;border-radius:3px}
+  .howto{margin-top:6px;font-size:10.5px;color:var(--tx3);line-height:1.6}
+  .howto b{color:#BFC8D4;font-weight:500}
+  .howto i{font-style:normal;color:#3F4756;margin:0 5px}
+  .legend{flex:1 1 auto;display:flex;flex-wrap:wrap;gap:5px 13px;justify-content:flex-end;padding-top:2px}
+  .lg{display:flex;align-items:center;gap:6px;font-size:10.5px;color:var(--tx2);white-space:nowrap}
+  .lg i{width:8px;height:8px;border-radius:2px;display:block;flex:0 0 auto}
+
+  main{flex:1 1 auto;position:relative;min-height:0;overflow:hidden}
+  #stage{position:absolute;inset:0;overflow:hidden;cursor:grab;
+         perspective:1400px;perspective-origin:50% 50%;
+         background:radial-gradient(1200px 680px at 48% 44%,rgba(72,92,132,.13),transparent 70%)}
+  #stage.dragging{cursor:grabbing}
+  #stage.spacepan{cursor:grab}
+  #stage.spacepan.dragging{cursor:grabbing}
+  #world{position:absolute;left:50%;top:50%;width:0;height:0;transform-style:preserve-3d}
+  .box{position:absolute;left:0;top:0;width:0;height:0;transform-style:preserve-3d;
+       transition:transform .22s cubic-bezier(.2,.9,.3,1)}
+  .face{position:absolute;left:0;top:0;border:1px solid rgba(255,255,255,.11)}
+  .f-front{box-shadow:inset 0 1px 0 rgba(255,255,255,.26), inset 0 0 0 1px rgba(255,255,255,.05)}
+  .f-top{box-shadow:inset 0 0 0 1px rgba(255,255,255,.10)}
+  .f-right,.f-left{box-shadow:inset 0 0 0 1px rgba(255,255,255,.05)}
+  .hit{cursor:pointer}
+  .fw{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+      font-family:var(--mono);font-size:9.5px;letter-spacing:.6px;font-weight:600;
+      pointer-events:none;white-space:nowrap}
+  @keyframes beadflow{0%,100%{opacity:.22}50%{opacity:1}}
+  .bead{animation:beadflow 2.6s linear infinite}
+  /* 演示用的 3D 箭头 + 跑马灯：光点沿箭杆移动（位置由 tick 逐帧写入，仅演示期间） */
+  .abead{display:none;pointer-events:none}
+  #world.demo .abead{display:block}
+  /* 模块内部结构：放大到 150% 以上、且这一块被选中时才「打开」
+     （见脚本里的 applyOpen）。选中态用 .open，薄板可见性用 .vis。
+     外壳面文字与内部结构同时出现会打架，所以打开时隐藏面文字。 */
+  .box.plate{display:none}          /* display:none 才是真的不参与渲染；visibility:hidden 仍会被合成器处理 */
+  .box.plate.vis{display:block}
+  .box.open > .f-front .fw{visibility:hidden}
+
+  /* 演示 HUD */
+  #demoHud{position:absolute;left:50%;top:14px;transform:translate(-50%,-14px);
+           display:flex;align-items:center;gap:12px;padding:9px 16px 10px;
+           background:linear-gradient(180deg,rgba(14,18,24,.94),rgba(9,11,15,.94));
+           border:1px solid rgba(255,255,255,.14);border-radius:6px;
+           box-shadow:0 10px 34px rgba(0,0,0,.6);
+           opacity:0;pointer-events:none;transition:opacity .28s,transform .28s;z-index:30;
+           max-width:min(760px,92vw)}
+  #demoHud.on{opacity:1;transform:translate(-50%,0);pointer-events:auto}
+  .d-live{width:7px;height:7px;border-radius:50%;background:var(--red);flex:0 0 auto;
+          box-shadow:0 0 10px var(--red);animation:dblink 1.5s ease-in-out infinite}
+  #demoHud.done .d-live{background:#22C55E;box-shadow:0 0 10px #22C55E;animation:none}
+  @keyframes dblink{0%,100%{opacity:1}50%{opacity:.25}}
+  .d-t{font-family:var(--mono);font-size:9px;letter-spacing:1.6px;color:var(--tx3);flex:0 0 auto}
+  .d-step{font-family:var(--mono);font-size:11.5px;color:#fff;flex:0 0 auto;letter-spacing:.5px}
+  .d-name{font-size:12.5px;color:#D9DFE8;white-space:nowrap;overflow:hidden;
+          text-overflow:ellipsis;flex:1 1 auto;min-width:0}
+  .d-bar{position:absolute;left:0;right:0;bottom:0;height:2px;background:rgba(255,255,255,.08);
+         border-radius:0 0 6px 6px;overflow:hidden}
+  .d-bar i{display:block;height:100%;width:0;background:var(--red)}
+  #demoHud.done .d-bar i{background:#22C55E}
+
+  #wires{position:absolute;inset:0;pointer-events:none;overflow:visible}
+  #labels{position:absolute;inset:0;pointer-events:none;overflow:hidden;--ls:1}
+  .lbl{position:absolute;pointer-events:auto;cursor:pointer;font-size:calc(11px * var(--ls));
+       line-height:1.3;white-space:nowrap;color:#B9C2D0;transition:color .12s,opacity .25s}
+  .lbl b{font-weight:500}
+  .lbl .no{font-family:var(--mono);font-size:calc(8.5px * var(--ls));color:var(--tx3);
+           display:inline-block;min-width:calc(15px * var(--ls))}
+  .lbl span.en{font-family:var(--mono);font-size:calc(8.5px * var(--ls));color:var(--tx3);margin-left:5px}
+  .lbl:hover,.lbl.on{color:#fff}
+  .lbl.on b{font-weight:650}
+  .lbl.on .no,.lbl.on span.en{color:#DDE3EB}
+
+  #panel{position:absolute;top:0;right:0;bottom:0;width:396px;max-width:92vw;
+         background:linear-gradient(180deg,#0A0C10,#06070A);
+         border-left:1px solid var(--line);transform:translateX(102%);
+         transition:transform .34s cubic-bezier(.22,.9,.28,1);display:flex;flex-direction:column;z-index:20}
+  #panel.open{transform:none}
+  .p-head{padding:20px 22px 16px;border-bottom:1px solid var(--line2);position:relative}
+  .p-dot{position:absolute;left:0;top:20px;width:3px;height:36px;border-radius:0 3px 3px 0}
+  .p-no{font-family:var(--mono);font-size:9.5px;letter-spacing:2px;color:var(--tx3)}
+  .p-name{font-size:17px;font-weight:650;margin:7px 0 0;line-height:1.35}
+  .p-en{font-family:var(--mono);font-size:10px;color:var(--tx2);margin-top:7px;line-height:1.5}
+  .p-close{position:absolute;right:16px;top:16px;width:26px;height:26px;border-radius:5px;
+           border:1px solid var(--line);background:transparent;color:var(--tx2);cursor:pointer;
+           font-size:13px;line-height:1;display:flex;align-items:center;justify-content:center}
+  .p-close:hover{color:#fff;border-color:rgba(255,255,255,.28)}
+  .p-body{padding:18px 22px 34px;overflow-y:auto;flex:1 1 auto}
+  .p-body::-webkit-scrollbar{width:6px}
+  .p-body::-webkit-scrollbar-thumb{background:rgba(255,255,255,.13);border-radius:3px}
+  .sec{margin-bottom:19px}
+  .sec h4{margin:0 0 9px;font-size:9.5px;font-weight:600;letter-spacing:1.6px;color:var(--tx3);
+          text-transform:uppercase;font-family:var(--mono)}
+  .sec p{margin:0;font-size:12.6px;line-height:1.85;color:#D4DAE3}
+  .sec ul{margin:0;padding:0;list-style:none}
+  .sec li{position:relative;padding-left:15px;margin-bottom:8px;font-size:12.6px;line-height:1.82;color:#D4DAE3}
+  .sec li:before{content:"";position:absolute;left:0;top:9px;width:5px;height:1px;background:var(--tx3)}
+  .sec li:last-child{margin-bottom:0}
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{font-family:var(--mono);font-size:10.5px;padding:4px 8px;border-radius:3px;
+        background:rgba(255,255,255,.055);border:1px solid var(--line2);color:#E2E7EE}
+  .cmp{font-size:12.4px;line-height:1.75;color:#C6CEDA}
+  /* 大白话讲解：与「内部原理」并列，视觉上明确标为「通俗版」 */
+  .sec.plain{background:linear-gradient(90deg,rgba(255,255,255,.065),rgba(255,255,255,.018));
+             border-left:2px solid rgba(255,255,255,.36);border-radius:0 5px 5px 0;
+             padding:12px 14px 13px}
+  .sec.plain h4{color:#EDF1F6;letter-spacing:1.4px}
+  .sec.plain h4 em{font-style:normal;font-family:var(--sans);font-size:9px;letter-spacing:0;
+                   color:#8A93A3;margin-left:7px;border:1px solid var(--line);
+                   padding:1px 5px;border-radius:3px;vertical-align:1px}
+  .sec.plain p{margin:0;font-size:13px;line-height:1.92;color:#E3E9F0}
+  .owner{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--tx2);
+         padding:7px 10px;border:1px solid var(--line2);border-radius:4px;background:rgba(255,255,255,.03);
+         cursor:pointer}
+  .owner:hover{color:#fff;border-color:rgba(255,255,255,.25)}
+  .owner i{width:6px;height:6px;border-radius:50%;display:block;flex:0 0 auto}
+  .iso{display:block;width:100%;height:auto;margin:2px 0 0}
+  .iso text{font-family:var(--sans)}
+  .iso .iso-line{stroke:rgba(255,255,255,.22);stroke-width:1}
+  .iso .ty{fill:#E4E9F0;font-size:12px;font-weight:600}
+  .iso .td{fill:#7E8797;font-size:9.5px}
+  .iso-cap{margin-top:6px;font-size:10px;color:var(--tx3);font-family:var(--mono);letter-spacing:.2px}
+
+  footer{flex:0 0 auto;border-top:1px solid var(--line2);padding:9px 24px 11px;
+         display:flex;align-items:center;gap:22px;flex-wrap:wrap}
+  .metrics{display:flex;gap:18px;flex-wrap:wrap}
+  .m{display:flex;flex-direction:column;gap:1px}
+  .m u{font-family:var(--mono);font-size:13.5px;font-weight:600;color:#fff;text-decoration:none;letter-spacing:.3px}
+  .m .e{font-family:var(--mono);font-size:8.5px;color:#4E5665;letter-spacing:.4px}
+  .m .z{font-size:10px;color:var(--tx2);letter-spacing:.2px}
+  .m.acc u{color:var(--red)}
+  .kv{flex:0 0 auto;display:flex;flex-direction:column;gap:4px}
+  .kv-t{font-size:9px;font-family:var(--mono);letter-spacing:1px;color:var(--tx3)}
+  .kv-row{display:flex;align-items:center;gap:8px;font-size:9px;font-family:var(--mono);color:var(--tx2)}
+  .kv-row em{font-style:normal;width:72px;text-align:right;color:var(--tx3)}
+  .kv-bar{width:96px;height:5px;background:rgba(255,255,255,.06);border-radius:3px;overflow:hidden}
+  .kv-bar i{display:block;height:100%;border-radius:3px}
+  .kv-row b{font-weight:500;width:74px;color:var(--tx2)}
+  .kv-row.now em,.kv-row.now b{color:#fff}
+  .ctrls{margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  button.c{font-family:var(--sans);font-size:11px;color:var(--tx2);cursor:pointer;
+           background:transparent;border:1px solid var(--line);border-radius:4px;padding:5px 10px;transition:.14s}
+  button.c:hover{color:#fff;border-color:rgba(255,255,255,.3)}
+  button.c.act{color:#fff;border-color:rgba(255,255,255,.42);background:rgba(255,255,255,.07)}
+  button.c.go{color:#fff;border-color:rgba(239,68,68,.55);background:rgba(239,68,68,.13)}
+  button.c.go:hover{border-color:var(--red);background:rgba(239,68,68,.2)}
+  button.c.go.stop{background:rgba(239,68,68,.92);border-color:var(--red);color:#fff}
+  button.c.go.stop:hover{background:var(--red)}
+  .hint{font-size:9.5px;color:var(--tx3);font-family:var(--mono);letter-spacing:.2px}
+  .zoomv{font-size:9.5px;color:var(--tx3);font-family:var(--mono);white-space:nowrap;
+         padding-left:9px;border-left:1px solid var(--line)}
+  .zoomv b{color:#fff;font-weight:600;font-size:10.5px}
+
+  @media (max-width:1460px){ .kv{display:none} }
+  @media (max-width:1250px){ header{flex-direction:column;gap:9px} .h-left{max-width:none}
+    .legend{justify-content:flex-start} }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="h-left">
+    <h1>GPT-6<span class="v"> Astra</span> 技术架构 · 3D 教学图</h1>
+    <div class="sub">
+      左：Original Transformer（2017）· 右：GPT-6 Astra · <b>官方未披露任何架构参数，本图只呈现已确认信息</b><br>
+      <code>1.05M</code> 上下文 · 输入 文本 / 图像 · 输出 仅文本 · 知识截止 2026-04-30 · <code>$10 / $50</code> 每百万 token · 2026-09-04 发布 · 参数量 / 层数 / 是否 MoE / 注意力 / 预训练数据 官方均未披露
+    </div>
+    <div class="howto">
+      读图：所有色块<b>尺寸统一</b>，只有颜色区分模块<i>·</i>
+      <b>灰色块 = 官方未披露，本图不作推测；带「争议」的块，面板里会给出正反两方证据，请自行判断</b><i>·</i>
+      <b>放大到 150% 以上并点选色块，它会「打开」露出内部结构</b>
+    </div>
+  </div>
+  <div class="legend" id="legend"></div>
+</header>
+
+<main>
+  <div id="stage">
+    <div id="world"></div>
+    <svg id="wires"></svg>
+    <div id="labels"></div>
+    <div id="demoHud">
+      <span class="d-live"></span>
+      <span class="d-t">自动演示</span>
+      <span class="d-step" id="dStep">01 / 15</span>
+      <span class="d-name" id="dName"></span>
+      <div class="d-bar"><i id="dBar"></i></div>
+    </div>
+  </div>
+
+  <aside id="panel">
+    <div class="p-head">
+      <div class="p-dot" id="pDot"></div>
+      <div class="p-no" id="pNo">—</div>
+      <div class="p-name" id="pName"></div>
+      <div class="p-en" id="pEn"></div>
+      <button class="p-close" id="pClose">✕</button>
+    </div>
+    <div class="p-body" id="pBody"></div>
+  </aside>
+</main>
+
+<footer>
+  <div class="metrics" id="metrics"></div>
+
+  <div class="kv">
+    <div class="kv-t">ARC-AGI-3 抽象推理（官方对比表口径）</div>
+    <div class="kv-row"><em>GPT-5.6 Sol</em><div class="kv-bar"><i style="width:8%;background:#6B7280"></i></div><b>7.8%</b></div>
+    <div class="kv-row"><em>Claude Opus 5</em><div class="kv-bar"><i style="width:30%;background:#9CA3AF"></i></div><b>30.2%</b></div>
+    <div class="kv-row now"><em>GPT-6 Astra</em><div class="kv-bar"><i style="width:100%;background:#EF4444"></i></div><b>99.9%</b></div>
+  </div>
+
+  <div class="ctrls">
+    <span class="hint">拖动旋转 · 空格/Shift+拖动 平移 · 滚轮缩放 · 双击复位 · 空格=演示</span>
+    <span class="zoomv">缩放 <b id="zoomV">100%</b></span>
+    <button class="c go" id="btnDemo">▶ 演示</button>
+    <button class="c" id="btnAuto">自动旋转</button>
+    <button class="c" id="btnReset">重置视角</button>
+    <button class="c" id="btnIso">等距</button>
+    <button class="c" id="btnLow">低角</button>
+    <button class="c" id="btnTop">俯视</button>
+  </div>
+</footer>
+
+<script>
+/* =====================================================================
+   GPT-6 Astra 3D 架构教学图（官方公开信息版 + 争议机制）
+   纯 CSS 3D transform + 自建投影数学，零外部依赖
+   方块尺寸统一 · 纵深 = 层叠维度 · 放大选中后色块可「打开」看内部结构
+   ===================================================================== */
+const stage   = document.getElementById('stage');
+const world   = document.getElementById('world');
+const labelsEl= document.getElementById('labels');
+const wires   = document.getElementById('wires');
+
+const P0 = 2600;                       // 基准透视距离。原来的 1250 是短焦，导致同一列里
+                                       // 靠下的色块比靠上的宽 22%，看起来「宽窄不一」；
+                                       // 2600 把差异压到约 10%，呈平滑透视收敛，仍保留纵深。
+stage.style.perspective = P0 + 'px';   // 必须由 JS 写入，保证与 project() 的 P0 永远一致
+let thx = 21, thy = -14;               // 俯仰 / 偏航（度）
+let fit = 1;                           // 自适应等比缩放（保证整图不被裁切）
+let uz  = 1;                           // 用户缩放倍率（滚轮），上限 6 → 600%
+let upx = 0, upy = 0;                  // 用户平移（空格/Shift + 拖动，双击复位）
+let phase = 0, auto = false;           // 默认静止：常驻旋转会让 CPU/GPU 一直跑满
+let panX = 0, panTarget = 0;           // 详情面板展开时的自动让位
+const ZMIN = 0.5, ZMAX = 6;            // 缩放范围 50% ~ 600%
+
+/* 总放大倍率。关键：缩放 #world 的同时，必须把 perspective 也乘上同一倍率。
+   若只缩放场景而相机距离不变，就等于把相机怼到模型脸上——近处元素贴脸爆炸、
+   远处缩到看不见深度差；两者同比放大得到的才是「纯光学变焦」：构图与透视
+   关系完全不变，只是整张图变大。副产品是投影分母恒为正，任何倍率下都数值安全。 */
+function M(){ return fit * uz; }
+
+/* 视口尺寸缓存：clientWidth/Height 与 getBoundingClientRect 都是布局属性，
+   每帧读会强制浏览器同步重排（我们刚改过样式，缓存必然失效）。
+   project() 每帧被调用几十次，不缓存的话重排成本会翻几十倍。 */
+let viewW = 0, viewH = 0, viewL = 0, viewT = 0;
+function measureView(){
+  const r = stage.getBoundingClientRect();
+  viewW = r.width; viewH = r.height; viewL = r.left; viewT = r.top;
+  // viewBox 必须跟着视口走：SVG 元素是 inset:0，若 viewBox 尺寸与元素不符，
+  // 默认 preserveAspectRatio 会把整层连线按比例缩放、和 3D 图元错位。
+  wires.setAttribute('viewBox', '0 0 ' + viewW + ' ' + viewH);
+}
+
+/* ---------- 投影：与 CSS transform 逐项一致 ---------- */
+function project(x, y, z){
+  const m = M();
+  x *= m; y *= m; z *= m;                    // 与 layout() 的 scale3d 一致
+  const rx = thx*Math.PI/180, ry = thy*Math.PI/180;
+  const X = x, Y = -y, Z = z;                          // CSS 中 y 轴向下
+  const cy_ = Math.cos(ry), sy_ = Math.sin(ry);
+  const x1 =  cy_*X + sy_*Z;
+  const z1 = -sy_*X + cy_*Z;
+  const cx_ = Math.cos(rx), sx_ = Math.sin(rx);
+  const y2 = cx_*Y - sx_*z1;
+  const z2 = sx_*Y + cx_*z1;
+  const Pc = P0 * m;                                   // 透视距离与场景同比缩放
+  const s  = Pc / (Pc - z2);
+  // panX / upx / upy 对应 CSS 的 translateX/translateY，作用在透视之内，
+  // 所以必须跟旋转后的坐标一起乘 s，否则会整体偏移 pan*(1−s) 个像素、压到方块上。
+  return { sx: viewW/2 + (x1 + panX + upx)*s,
+           sy: viewH/2 + (y2 + upy)*s, s: s };
+}
+
+/* ---------- 颜色 ---------- */
+function hexA(h){ h=h.replace('#',''); if(h.length===3) h=h.split('').map(c=>c+c).join('');
+  return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)]; }
+function toRgb(a){ return 'rgb(' + a.map(v=>Math.round(Math.max(0,Math.min(255,v)))).join(',') + ')'; }
+function shade(h,f){ const c=hexA(h); return toRgb(c.map(v=> f>0 ? v+(255-v)*f : v*(1+f))); }
+function shadeA(h,f,a){ const c=hexA(h);
+  const v = c.map(x => Math.round(Math.max(0, Math.min(255, f>0 ? x+(255-x)*f : x*(1+f)))));
+  return 'rgba(' + v[0] + ',' + v[1] + ',' + v[2] + ',' + a + ')'; }
+function lum(h){ const c=hexA(h); return (0.299*c[0]+0.587*c[1]+0.114*c[2])/255; }
+
+/* ---------- 几何 ---------- */
+const NUM = ['①','②','③','④','⑤','⑥','⑦','⑧'];   // 层序编号（内部结构薄板 + 等距图共用）
+const X_R = 158, X_L = -400;
+const BW = 210, BH = 28;
+const DEF_D = 34;   // 统一厚度。曾经用厚度编码「参数量级」（如 MoE 层最厚、量化层最薄），
+                    // 但那是我加的编码、不是架构本身的信息，且会让色块前后错落、看起来不一致。
+                    // 参数量级的信息在面板「关键数据」里仍有，故取消该视觉编码。
+
+const ROW = { r01:-358, r02:-316, r03:-274,
+              r04:-220, r05:-178, r06:-136, r07:-94,
+              r08:-42,
+              r09:34, r10:76, r11:118, r12:160, r13:202, r14:244, r15:286 };
+const LROW = [-170,-130,-90,-50,-10,30,70,110,150];
+
+/* ---------- 立方体（六面，渐变着色 + 受光边高光） ---------- */
+function makeBox(o){
+  const el = document.createElement('div');
+  el.className = 'box' + (o.boxCls ? ' ' + o.boxCls : '');
+  el._base = 'translate3d(' + o.x + 'px,' + (-o.y) + 'px,' + (o.z||0) + 'px)' +
+             (o.rotZ ? ' rotateZ(' + o.rotZ + 'deg)' : '');
+  el.style.transform = el._base;
+
+  const w=o.w, h=o.h, d=o.d, base=o.color;
+  const ink = o.ink || (lum(base) > 0.60 ? '#0B0B0B' : '#FFFFFF');
+  // 光照方向：左上前方 → 顶面最亮、右面次暗、左面最暗
+  const G = (a,b) => 'linear-gradient(' + a + ',' + shade(base,b[0]) + ',' + shade(base,b[1]) + ')';
+  const defs = {
+    front : [w, h, 'translateZ(' + ( d/2) + 'px)',                   G('165deg',[ 0.10,-0.14])],
+    back  : [w, h, 'translateZ(' + (-d/2) + 'px) rotateY(180deg)',   shade(base,-0.62)],
+    right : [d, h, 'translateX(' + ( w/2) + 'px) rotateY(90deg)',    G('180deg',[-0.20,-0.46])],
+    left  : [d, h, 'translateX(' + (-w/2) + 'px) rotateY(-90deg)',   G('180deg',[-0.40,-0.60])],
+    top   : [w, d, 'translateY(' + (-h/2) + 'px) rotateX(90deg)',    G('105deg',[ 0.40, 0.16])],
+    bottom: [w, d, 'translateY(' + ( h/2) + 'px) rotateX(-90deg)',   shade(base,-0.58)]
+  };
+  ['back','left','bottom','top','right','front'].forEach(k=>{
+    if (o.faces && o.faces.indexOf(k) < 0) return;
+    const f = defs[k];
+    const div = document.createElement('div');
+    div.className = 'face f-' + k + (o.hit ? ' hit' : '') + (o.cls ? ' ' + o.cls : '');
+    div.style.width = f[0] + 'px';
+    div.style.height = f[1] + 'px';
+    div.style.marginLeft = (-f[0]/2) + 'px';
+    div.style.marginTop  = (-f[1]/2) + 'px';
+    div.style.background = f[3];
+    div.style.borderColor = o.border || 'rgba(255,255,255,.11)';
+    div.style.transform = f[2];
+    if (k === 'front' && o.face){
+      const tx = document.createElement('div');
+      tx.className = 'fw';
+      tx.style.color = o.faceColor || ink;
+      tx.textContent = o.face;
+      div.appendChild(tx);
+    }
+    el.appendChild(div);
+  });
+  el._front = el.querySelector('.f-front');
+  world.appendChild(el);
+  return el;
+}
+
+/* ---------- 自适应视距 ---------- */
+/* 内容包围盒（视口坐标） */
+function contentBox(){
+  let mnx = 1e9, mxx = -1e9, mny = 1e9, mxy = -1e9, any = false;
+  const acc = el => {
+    const b = el.getBoundingClientRect();
+    if (b.width === 0 && b.height === 0) return;
+    any = true;
+    if (b.left   < mnx) mnx = b.left;
+    if (b.right  > mxx) mxx = b.right;
+    if (b.top    < mny) mny = b.top;
+    if (b.bottom > mxy) mxy = b.bottom;
+  };
+  world.querySelectorAll('.face').forEach(acc);
+  labelsEl.querySelectorAll('.lbl').forEach(acc);
+  return any ? { mnx:mnx, mxx:mxx, mny:mny, mxy:mxy } : null;
+}
+/* 以 (cX,cY) 为中心等比缩放时，把包围盒收进 [tl,tr]×[tt,tb] 所需的比例。
+   注意不能拿「总宽高」比——包围盒中心未必落在 cX/cY 上，必须按各自到中心的距离解。 */
+function needScale(b, cX, cY, tl, tr, tt, tb){
+  let f = 1;
+  const EPS = 0.5;
+  if (b.mxx - cX >  EPS) f = Math.min(f, (tr - cX) / (b.mxx - cX));
+  if (b.mnx - cX < -EPS) f = Math.min(f, (tl - cX) / (b.mnx - cX));
+  if (b.mxy - cY >  EPS) f = Math.min(f, (tb - cY) / (b.mxy - cY));
+  if (b.mny - cY < -EPS) f = Math.min(f, (tt - cY) / (b.mny - cY));
+  return Math.max(0, f);
+}
+/* 详情面板打开时会吃掉右侧一块宽度，可用区要按「舞台宽度 − 面板宽度」算。
+   panX 与 scale 都作用在透视之内，panX = −面板宽/2 恰好把内容中心对到可用区中心，
+   此时缩放中心与目标区中心重合，拟合结果是对称最优的。 */
+function panelWidth(){ return (panel && panel.classList.contains('open')) ? panel.offsetWidth : 0; }
+function panFor(){ return -panelWidth() / 2; }
+
+/* 只调 fit（自适应等比缩放）与 panX（面板让位），不动 uz / upx / upy —— 那是用户的视角。
+   因为 scene 与 perspective 同比缩放是「纯光学变焦」，所以缩放后包围盒与 fit 严格成正比，
+   一次解就准；但标签防重叠的间距是固定屏幕像素、不随缩放变化，仍然必须迭代。 */
+function fitZoom(){
+  measureView();
+  const W = viewW, H = viewH;
+  if (!W || !H) return;
+  const r = {left:viewL, top:viewT, right:viewL + W, bottom:viewT + H};
+  const pw = panelWidth(), PAD = 14;
+  const tl = r.left + PAD,  tr = r.right - pw - PAD;
+  const tt = r.top + PAD,   tb = r.bottom - PAD;
+  const cX = r.left + W/2 - pw/2;              // == 目标区中心 == panX=panFor() 时的缩放中心
+  const cY = r.top + H/2;
+  const px = panX, puz = uz, pux = upx, puy = upy;
+  panX = panFor(); uz = 1; upx = 0; upy = 0;   // 自动拟合永远按「未缩放、未平移」的基准画面算
+  fit = 1;                        // 必须从 1 重新拟合：fit 只减不增，否则面板开一次后图会永久变小
+  for (let it = 0; it < 7; it++){
+    layout();
+    const b = contentBox();
+    if (!b) break;
+    const f = needScale(b, cX, cY, tl, tr, tt, tb) * 0.995;
+    if (f > 0.994) break;
+    fit = Math.max(0.30, fit * f);
+  }
+  panX = px; uz = puz; upx = pux; upy = puy;
+  layout();
+}
+
+/* =====================================================================
+   数据：右侧 —— GPT-6 Astra（OpenAI）
+   口径分档（每一处都逐条标注）：
+     ① 官方一手：官方公告页（openai.com/index/gpt-6-astra/，已取全文）、
+        官方开发者文档（developers.openai.com/api/docs/models/gpt-6-astra，可直接访问；
+        注：platform.openai.com 会被 Cloudflare 拦截，故以前者为准）、
+        system card（deploymentsafety.openai.com/gpt-6-astra，部分章节经第三方按页码转述）
+     ② 官方人员公开表态：如首席科学家关于「限制循环次数」的表述
+     ③ 二手转述 / 第三方分析：如「recurrent depth / looped transformer」的归属、
+        loop 数为 2–4 的推测
+   官方公告页对方法论的全部表述只有一句：把预训练、强化学习与对齐三类工作「汇集」起来；
+   参数量 / 层数 / 隐藏维度 / 是否 MoE / 注意力机制 / 预训练数据 / RL 方法 / 对齐算法
+   全部未披露。官方公告页亦未出现「recurrent depth」或「looped transformer」二词。
+   ===================================================================== */
+const RIGHT = [
+ {no:'01', y:ROW.r01, x:X_R, name:'输入 / 输出：文本 + 图像进，文本出', en:'官方 API 文档口径', face:'INPUT', color:'#3B82F6', side:1,
+  inner:[['文本输入','官方确认'],['图像输入','官方确认'],['输出仅文本','不产出图像'],['音频 / 视频','不支持']],
+  d:{what:'官方文档给出的模态边界：输入是文本与图像，输出只有文本；不支持原生音频输出，也不支持 Realtime。',
+     how:['**OpenAI 官方开发者文档**（developers.openai.com 的模型页）列明：输入端为 text、images，输出端为 text。',
+          '⚠ 来源说明：`platform.openai.com` 会被 Cloudflare 拦截，但 **`developers.openai.com` 上的同一份官方文档可以直接访问**——本页规格因此属**官方一手**，不是二手转述。',
+          'Realtime 属于另一条产品线（gpt-realtime-*），旗舰线从未包含；这不是本代的退步。',
+          '官方公告页本身没有列规格表——它是一篇产品发布博文；模态与长度数字要去官方文档侧查。',
+          '⚠ 官方公告页本身没有列规格表（它是一篇产品发布博文）；模态与长度数字要去官方**开发者文档**侧查，那是另一份官方一手材料。'],
+     data:['文本 + 图像输入','输出仅文本','不支持音频 / Realtime'],
+     cmp:'2017 版只有文本子词输入，没有图像通路。'}},
+
+ {no:'02', y:ROW.r02, x:X_R, name:'长上下文与跨窗口笔记机制', en:'官方公告页披露的唯一工程机制', face:'CONTEXT', color:'#14B8A6', side:1,
+  inner:[['上下文窗口 1,050,000','官方开发者文档'],['最大输入约 922K','= 1,050,000 − 128,000'],['最大输出 128K','含推理 token'],['跨窗口笔记','不反复压缩，早期窗口仍可检索']],
+  d:{what:'长上下文之外，官方公告页披露了一项具体的机制改造——这是整篇公告里唯一谈得上「机制」的内容，而且它是工程侧的，不是网络架构。',
+     how:['官方原话大意：过去模型用「compaction」（压缩摘要）来处理上下文写满的情况；Astra 在 Codex 里改为**跨上下文窗口保留笔记**——不再把累积细节反复压成一份摘要，**更早的上下文窗口仍然可被检索**。',
+          '该功能可通过 Codex 的 config.toml 启用，官方称将在未来数周成为 Astra 的默认设置。',
+          '⚠ 这条要读准：它改的是**上下文管理方式**，不是模型内部结构。不要把它读成架构创新。',
+          '长度数字来自**官方开发者文档**：上下文窗口 1,050,000、最大输出 128,000；最大输入约 922,000 是「总窗口 − 最大输出」的差值，多份对同一官方页的抓取一致给出，属推算口径而非直接读到的字段。官方公告页本身只提到基准测到了 1M 长上下文，未给出窗口上限。'],
+     data:['约 1.05M 上下文 · 922K 输入 · 128K 输出','Codex 跨窗口笔记（官方公告页）','早期窗口仍可检索'],
+     cmp:'2017 版没有上下文窗口这个概念，注意力范围就是当前输入序列。'}},
+
+ {no:'03', y:ROW.r03, x:X_R, name:'架构细节：官方未披露', en:'参数量 · 层数 · 是否 MoE · 注意力 · 预训练数据', face:'UNDISCLOSED', color:'#64748B', side:1,
+  inner:[['参数量 / 模型规模','官方未披露'],['层数 / 隐藏维度','官方未披露'],['是否 MoE','官方未披露'],['是否循环结构','官方公告页未提'],['预训练数据 / RL 方法 / 对齐算法','官方未披露']],
+  d:{what:'这一块代表官方没有披露的部分。官方公告页是一篇产品发布博文，全篇没有任何架构参数。',
+     how:['官方对训练方法论的全部表述只有一句：把多年来在**预训练、强化学习与对齐**三个领域的投入汇集起来——三个笼统类别，不含任何架构、网络拓扑或参数机制。',
+          '参数量、层数、隐藏维度、是否为混合专家、注意力机制、预训练数据规模、RL 与对齐的具体算法，**一律未披露**。',
+          '⚠ 需要特别指出：连「是否为循环结构」这一点，**官方公告页都没有提**（公告页全文未出现 recurrent depth / looped transformer 二词）；开发者文档同样没有。',
+          '官方在架构层面**唯一留下痕迹**的一处表述是 system card 可监控性章节里的一句否定句——**「CoT 可控性的变化并非由任何架构改动所导致」**。这是官方默认「存在架构改动」的信号，但方向是否定：它没有说明改了什么。',
+          '网上流传的「5–6 万亿参数」等说法，出自 **2026 年 4 月的发布前传闻类文章**（其给出的上下文 200 万、定价 $2.5/$12 与官方规格直接冲突），并非按定价与算力反推——但同样**没有任何官方出处**，本图不采用。'],
+     data:['架构参数：官方全部未披露','方法论：仅「预训练 / 强化学习 / 对齐」三类','第三方规模估算无官方出处'],
+     cmp:'2017 版的每个结构数字在论文里都有明确记载，属于可查的文档规格。'}},
+
+ {no:'04', y:ROW.r04, x:X_R, name:'争议机制：recurrent depth / 循环层', en:'归属存疑 · 面板给出正反证据', face:'RECURRENT? · 争议', color:'#8B5CF6', side:1,
+  inner:[['流传说法','复用同一组层做多次内部循环'],['推理在隐藏状态内完成','不写成文本'],['原始出处：The Information','2026-09-01 · 引述知情人士'],['⚠ 官方从未使用该术语','三家官方材料逐字检索均无']],
+  d:{what:'这是本次发布里传播最广、也最需要小心的一条：多方称 Astra 采用「循环深度」（recurrent depth，又称 looped transformer）——复用同一组网络层、在同一个 token 上反复计算，把「思考」放在隐藏状态里而不是写成文字。**本图把它单列出来，因为它的归属本身存疑。**',
+     how:['**原始出处**：该术语最早出自 **The Information 于 2026-09-01 的报道**（引述一位熟悉该模型开发的人）。这是目前可查到的最早来源，属调查报道（③级），**不是官方材料**。',
+          '**官方态度是「不证实也不否认」**：多家媒体报道，OpenAI 对 The Verge 的询问既未确认也未否认，只把记者引向首席科学家 Jakub Pachocki 的一则发文。**这是本节点最需要被读者记住的一条事实。**',
+          '**两条二手归因需要纠正**：① 有博客称该技术「由 OpenAI 自家材料描述为 recurrent depth」——**这与官方公开材料不符**（官方公告页、system card 可检索部分、官方开发者文档三处逐字检索均无该词）；② 另有流传的架构名「Symphony」，出自 **2026 年 4 月的发布前传闻类文章**，其给出的上下文（200 万）与定价（$2.5/$12）**与官方规格直接冲突**，且那些文章把「Symphony」定义为「原生多模态 MoE 架构」——**它并不是 recurrent depth 的别名**，两者不可混为一谈。',
+          '**存疑方**：一手观察者（worldthatgrows 的发布备忘）明确指出——**官方 system card 确立的是「不写思维链也能完成更多任务」这一能力现象，并未确认循环就是该现象的机制**，因此架构改动仍未获确认。',
+          '**本图已核实**：官方公告页全文检索，**没有出现 recurrent depth，也没有出现 looped transformer**；official 开发者文档与 system card 可检索部分同样如此。',
+          '⚠ 结论：这是一条**归属未定的机制传闻**——源头是单篇调查报道，官方既不证实也不否认，官方材料里也没有这个词。请勿把它当作已证实的架构。'],
+     data:['原始出处：The Information（2026-09-01）','官方：不证实也不否认','官方三处材料均未用该术语'],
+     cmp:'2017 版是固定深度的前向计算，不存在「同一组层反复跑」的设计。'}},
+
+ {no:'05', y:ROW.r05, x:X_R, name:'相邻可确证事实：官方口径与 no-CoT 现象', en:'逐条标注可否证实', face:'EVIDENCE', color:'#0EA5E9', side:1,
+  inner:[['计算深度 ≤ GPT-4 的 2 倍','首席科学家发文（实为一则反驳）'],['CoT 变化与架构改动无关','system card 原文'],['无 CoT 时间跨度 ↑约一个数量级','UK AISI · system card'],['⚠ 「限制循环次数」「loop 2–4」','未获独立证实']],
+  d:{what:'上一格讲争议，这一格把围绕它**能确证与不能确证**的部分逐条分开——给读者一把尺子。',
+     how:['**可确证（②级·官方人员发文）**：首席科学家 Jakub Pachocki 公开表示，包括 Astra 在内的当前前沿模型，**计算图深度与 GPT-4 相差不超过两倍**。⚠ 但这则发文**是一则反驳**——它回应的是「架构出现剧变」的说法，要点是架构「并未出现跳跃式复杂度增长」，且 CoT 可监控性的变化「与架构变更无关」。**因此它是对 recurrent depth 说法的一处反证，不能读成对该说法的支持。**',
+          '**可确证（①级·system card 原文）**：官方在可监控性章节留下一句带否定性的架构相关表述——**「CoT 可控性的变化并非由任何架构改动所导致」**。这是官方在架构层面唯一一次留下痕迹的表述，方向是否定。',
+          '**可确证（①级·system card 原文）**：由英国 AI 安全研究院（UK AISI）的评估引出一条观察——**「无 CoT 的时间跨度可能提升约一个数量级」**。这条说的是能力现象，不是机制。',
+          '⚠ **两条未能确证的说法（本图不采信）**：① 「公司限制了循环次数」——该说法仅见单篇博客，另有五家独立来源转述同一则发文时**均未提及**这句，属无出处；② 「loop 数为 2–4」——同样仅见单篇博客的转述，在可检索到的相关分析里**找不到这个数字**。',
+          '把这四行连起来：**「官方否认架构剧变」是一手事实，「无 CoT 也能干很多活」是一手事实；而「到底是不是循环层、循环几次」在官方口径下仍无答案。**'],
+     data:['计算深度 ≤ GPT-4 的 2 倍（②级 · 实为反驳）','CoT 变化与架构改动无关（①级 · system card）','无 CoT 时间跨度 ↑约一个数量级（①级 · UK AISI）','「限制循环次数」「loop 2–4」：未获证实'],
+     cmp:'2017 版的计算深度固定为层数，且推理过程必须逐 token 写出。'}},
+
+ {no:'06', y:ROW.r06, x:X_R, name:'官方方法论口径：一句话三类', en:'预训练 / 强化学习 / 对齐', face:'TRAINING', color:'#F59E0B', side:1,
+  inner:[['预训练','公告页三类之一'],['强化学习','公告页三类之一'],['对齐','公告页三类之一'],['⚠ 公告页仅此三类','不含任何架构或算法细节'],['system card 另有两句','数据管线过滤 + RL 先思考再作答']],
+  d:{what:'官方**公告页**对「这个模型是怎么做出来的」给出的全部信息——就是一句话，三个类别。（限定：这是公告页的口径；system card 另有一节谈训练数据与方法，但也只到下面这一层。）',
+     how:['官方原话：GPT-6 Astra 把多年来在**预训练、强化学习与对齐**三个领域的成果与重大投入汇集在一起。',
+          '这是全篇唯一涉及训练方法论的表述，而且高度抽象：没有数据规模、没有数据构成、没有 RL 算法名、没有对齐方法名。',
+          'system card 另有一节（Model Data and Training），比公告页多两句实质内容：训练数据是**多样化数据集并经数据处理管线过滤（含减少个人信息）**；以及推理模型**通过强化学习训练成「先思考再作答」**。到此为止，仍无任何架构细节。',
+          '把它单独成块，是为了让读者看清「官方公开的边界在哪」——边界之外的内容，本图一律不填。',
+          '作为对照，同期其他厂商的做法差异很大：有的一手技术报告会逐项写出训练配方与超参，有的连架构类型都不写。同一套图里把「官方到底说了什么」如实呈现，比补齐一个漂亮的结构更重要。'],
+     data:['官方仅表述三类工作','无数据规模 / 算法细节','本图不补未披露内容'],
+     cmp:'2017 版论文公开了完整配方（数据、层数、超参、训练细节）。'}},
+
+ {no:'07', y:ROW.r07, x:X_R, name:'训练规模：Stargate · 10 万+ GPU', en:'研发副总裁口径 · OpenAI 迄今最大', face:'SCALE', color:'#7C3AED', side:1,
+  inner:[['OpenAI 迄今最大的一次训练','研发副总裁称「by far」'],['首次在 10 万+ GPU 上预训练','研发副总裁记者会口径'],['地点：Stargate（得州）','官方口径'],['⚠ 具体卡数与时长未披露','且「GPU」与「DBU」两种写法并存']],
+  d:{what:'关于「训练了多大算力」这一条，官方没有给数字表，但研发负责人给了可以引用的量级表述。',
+     how:['研发副总裁 Aidan Clark 在记者会上称这是公司**「by far」最大的一次训练**，并且是 OpenAI **首次在超过 10 万块 GPU 上做预训练**，地点在得州的 Stargate 站点。',
+          '这是②级（官方人员在记者会上的表态，经媒体转述）：量级可信，但没有精确卡数、没有训练时长、没有算力总量。另有口径分歧需要标注：有报道把该数字写作「10 万 DBU」而非「10 万 GPU」，本图按较通行的「GPU」表述。',
+          '⚠ 注意这条容易被外推成「所以参数一定有 X 万亿」——**算力规模推不出参数量**，中间隔着数据规模、稀疏度、训练时长等一堆未公开变量。本图不做这种推算。',
+          '另据多家报道，为集中算力，OpenAI 在 2026 年 3 月关停了视频生成产品 Sora——这条属③级（媒体），且与架构无关，仅作背景。'],
+     data:['首次 >10 万 GPU 预训练（官方人员）','Stargate · 得州','精确卡数 / 时长 / 算力 未披露'],
+     cmp:'2017 版论文给出了完整的算力与训练时长描述，属可查的文档规格。'}},
+
+ {no:'08', y:ROW.r08, x:X_R, name:'推理档位：五档', en:'low / medium / high / xhigh / max', face:'EFFORT', color:'#EC4899', side:1,
+  inner:[['五档强度','low / medium / high / xhigh / max'],['取代传统采样参数','移除 temperature / top_p'],['是否可关闭推理','官方口径不一致'],['迁移提示','旧请求用 none 需从 low 起测']],
+  d:{what:'这一代把「想多久」做成接口层的旋钮，并且移除了传统的采样参数。',
+     how:['**官方开发者文档**给出 `reasoning.effort` 的取值为 **low / medium / high / xhigh / max** 五档；其中 xhigh 与 max 是相对前代新增的。',
+          '⚠ 一处**口径不一致**要标明：有整理称 Astra「不支持 none、始终带推理」，也有整理称除五档外「另有一个非推理模式」；而 system card 里确实讨论了 reasoning=None 条件下的表现。因此本图只列可确证的五档，**不判定是否存在非推理模式**。',
+          '迁移注意：官方建议旧请求里用了已移除参数（如 temperature）会直接报错；旧请求用了 none / minimal 的，建议从 low 开始测。',
+          '⚠ 档位取值属**官方开发者文档**口径，与官方公告页不在同一份材料里——本图标注来源，便于溯源。'],
+     data:['五档：low / medium / high / xhigh / max','移除 temperature / top_p','是否存在非推理模式：口径不一致'],
+     cmp:'2017 版只有一条固定的前向路径，没有可切换的思考深度。'}},
+
+ {no:'09', y:ROW.r09, x:X_R, name:'可监控性下降（官方原文）', en:'本代最需要被读到的一段', face:'MONITORABILITY', color:'#EF4444', side:1,
+  inner:[['书面推理更难监控','官方原文承认'],['被指示时规避能力增强','官方原文承认'],['复杂任务仍难隐藏','官方原文补充'],['提升可监控性仍是研究优先项','官方原文']],
+  d:{what:'官方在公告页里罕见地直接承认了一项**控制能力的下降**。这是整篇公告里信息量最大的一段，值得逐句读。',
+     how:['官方原文一：评估发现 **Astra 的书面推理比 GPT-5.6 Sol 更难监控**——依据是那些明确要求模型规避监控的测试；官方把它归因于 Astra「在较简单任务上对书面推理有更强的控制力」以及「能用更少的书面步骤解决问题」。',
+          '官方原文二：**Astra 在隐藏复杂任务所需推理方面似乎仍有困难，但官方严肃对待这一下降趋势**，并称「提升可监控性仍是研究优先事项」。',
+          '官方原文三：**「错位监控无法取代对齐」**——官方称目标是让模型可靠地待在授权范围内，使这些保护措施本身无需介入。',
+          '⚠ 这三句是**官方自陈**，不是第三方指控。本图把它放在显著位置，是因为它直接关系到「不写思维链」这一做法的代价——而这正是上一格那条争议机制的动机所在。'],
+     data:['书面推理更难监控：官方承认','规避监控能力增强：官方承认','提升可监控性：官方列为优先项'],
+     cmp:'2017 版没有「可监控性」这个概念，模型的每一步计算都在明处。'}},
+
+ {no:'10', y:ROW.r10, x:X_R, name:'监控部署：分类器在产线运行', en:'官方：错位监控无法取代对齐', face:'MONITORING', color:'#FB7185', side:1,
+  inner:[['产线部署错位监控','官方原文'],['检查推理与行动','分类器自动中止'],['Astra 级模型适用','官方限定说法'],['⚠ 监控不能替代对齐','官方原话']],
+  d:{what:'承认监控变难之后，官方给出的工程侧对策：把监控做成产线组件。',
+     how:['官方称正在为 **Astra 级模型**在**生产环境**部署错位监控（misalignment monitoring）。',
+          '机制是一组**分类器**，检查模型的**推理与行动**是否越出授权范围，并**自动中止**可能未授权的活动。',
+          '官方同时强调「错位监控无法取代对齐」——监控是兜底，不是替代。',
+          '⚠ 与上一格合起来看：官方一边承认「更难监控」，一边把监控部署到产线。这两句话放在一起才完整，只引其中一句都会失真。'],
+     data:['产线错位监控（Astra 级模型）','分类器检查推理与行动并自动中止','官方：监控不能替代对齐'],
+     cmp:'2017 版不存在运行时监控这一层。'}},
+
+ {no:'11', y:ROW.r11, x:X_R, name:'Computer Use 作为一等能力', en:'从研究预览变成正式能力', face:'COMPUTER USE', color:'#2DD4BF', side:1,
+  inner:[['浏览器 / 表格 / 桌面应用','通过人类界面操作'],['不再是研究预览','正式能力'],['长时程 Agent','主要定位场景'],['屏幕理解','ScreenSpot-Pro 92.7%']],
+  d:{what:'官方这一代产品层面最大的变化：把「操作电脑」从研究预览提升为一等能力——通过人用的同一套界面去驱动浏览器、表格与桌面应用。',
+     how:['官方给的定量对比（官方对比表）：**Agents Last Exam 59.3%**（GPT-5.6 Sol 53.6%、Claude Opus 5 55.5%），且最高分配置下 Astra 的输出 token 比 Opus 5 少约 **65%**。',
+          '**OSWorld 2.0**（官方表名为 v2026.08.08 · offline set · **partial score**，即部分分）：Astra **72.6%**、Sol 65.7%、Opus 5 70.2%；并且 Astra 是「每任务约 40 分钟拿到 72.6%」，而 Sol 是「约 75 分钟拿到 65.7%」——官方称每任务耗时少了约 47%。',
+          '**ScreenSpot-Pro（无工具）92.7%**（Sol 76.9%、Claude Fable 5 87.3%）；**Mind2Web** 结合更新后的 Codex harness，完成速度比 Sol 快 **1.9 倍**。',
+          '官方演示覆盖报税表、电子表格、Power BI、KiCad 电路板、Blender、Unreal Engine、网页 QA、科研软件、日历与浏览器检索。'],
+     data:['Agents Last Exam 59.3%','OSWorld 2.0 72.6%（少约 47% 时间）','ScreenSpot-Pro 92.7%'],
+     cmp:'2017 版是纯文本模型，不存在界面操作的概念。'}},
+
+ {no:'12', y:ROW.r12, x:X_R, name:'工具与 API', en:'Responses 优先 · 十个托管工具', face:'TOOLS', color:'#38BDF8', side:1,
+  inner:[['十个托管工具','联网 / 文件 / 图像生成 / 代码 / Shell 等'],['Responses API 优先','工具支持最全'],['也支持 Chat Completions / Batch',''],['⚠ 不支持 Realtime / 微调','也不提供 embeddings']],
+  d:{what:'官方文档侧给出的工具清单与接口边界——这一部分是可照抄的硬信息。',
+     how:['托管工具（官方开发者文档）：联网搜索、文件搜索、图像生成、代码解释器、托管 Shell、apply patch、Skills、Computer Use、MCP、工具搜索——与官方文档逐项一致。',
+          '接口：Responses、Chat Completions、Batch；**不支持 Realtime**。（编者说明：旗舰线此前几代同样标注不支持 Realtime，实时能力由另一条 gpt-realtime-* 产品线提供——这一句是本图解释，非官方表述。）',
+          '不提供微调（fine-tuning），也不提供 embeddings 与原生音频输出。',
+          '结构化能力：流式、函数调用、结构化输出、提示缓存。'],
+     data:['十个托管工具','Responses / Chat Completions / Batch','不支持 Realtime 与微调'],
+     cmp:'2017 版直接输出概率分布，没有工具调用协议。'}},
+
+ {no:'13', y:ROW.r13, x:X_R, name:'服务规格与定价', en:'$10 / $50 · 272K 输入阈值', face:'SERVICE', color:'#A855F7', side:1,
+  inner:[['$10 输入 / $50 输出','每百万 token'],['超 272K 输入','输入与缓存 2× · 输出 1.5×'],['缓存命中 $1','缓存写入 $12.50'],['Fast 2 倍价 · Batch 与 Flex 半价','速度与计费同时翻倍 / 减半']],
+  d:{what:'官方文档与定价页给出的服务规格。这些是运营参数，不是架构信息——但同样属于官方一手，而且有一个容易踩的计费陷阱。',
+     how:['标准价：**输入 $10、输出 $50** 每百万 token；缓存命中输入 **$1**；缓存写入 **$12.50**。',
+          '⚠ **计费悬崖**（官方开发者文档原文）：单次请求输入超过 **272K token** 后，**整单**改按 **输入与缓存 2 倍、输出 1.5 倍** 计费——即输入 $20、缓存写入 $25、输出 $75；不是只对超出的部分加价。写成「整单翻倍」对输出档并不准确。',
+          'Fast 模式速度最高为标准处理的 2 倍，价格也是 2 倍；Batch 与 Flex 为半价。',
+          '限流（标准 Tier 1）：500 请求/分钟、500,000 token/分钟。',
+          '⚠ 这些数字来自**官方开发者文档与定价页**（developers.openai.com，可直接访问），属官方一手；不来自官方公告页。'],
+     data:['$10 / $50 每百万 token','超 272K：2× 输入与缓存 / 1.5× 输出','缓存 $1 · 写入 $12.50'],
+     cmp:'2017 版没有服务层参数的概念。'}},
+
+ {no:'14', y:ROW.r14, x:X_R, name:'安全门槛：Preparedness 网络安全 Critical', en:'首个跨过该门槛的 OpenAI 模型', face:'SAFETY', color:'#22D3EE', side:1,
+  inner:[['首个达网安 Critical 门槛','官方 Preparedness Framework'],['上线版拒绝高级网安任务','如拒写 PoC 利用代码'],['评估中利用 2 个未知 0-day','已向维护者披露'],['旗舰能力受限开放','官方措辞为 OpenAI Daybreak']],
+  d:{what:'官方在安全侧披露的信息比往常更具体，因为这一代**首次跨过了自家网络安全能力的「关键级」门槛**。',
+     how:['官方口径：Astra 在网络安全能力上是一次「显著跃升」，**满足 Preparedness Framework 下的 Critical 门槛**——是 OpenAI 首个达到该门槛的模型。',
+          '因此上线版本会**拒绝**更高级的网络安全任务，例如为漏洞创建概念验证（PoC）利用代码；更高级能力仅对受信任的安全防御者开放，官方公告页给出的渠道名是 **OpenAI Daybreak**（「Daybreak Blue」是媒体口径，非官方原名）。',
+          '官方公告页**正文**披露：评估过程中 Astra **发现并利用了 2 个此前未知的零日漏洞**，两个都已向维护者披露。',
+          '网安基准（官方对比表）：ExploitBench **100%**（Sol 78.5%、Opus 5 70%）、ExploitGym 42.4%（30.3%、22.0%）、SRE-Bench 单次 88.0% / 四次内 99.2%（Sol 55.9% / 68.7%）、SEC-Bench Pro 85.4%（79.1%）。',
+          '⚠ 这些都是**官方自测 / 官方组织评测**口径，且评估条件与上线版本的可用能力不同（上线版拒绝部分任务）。'],
+     data:['首个达 Preparedness 网安 Critical','上线版拒绝高级网安任务','评估中发现 2 个未知 0-day'],
+     cmp:'2017 版不存在「能力门槛」与分级开放这类概念。'}},
+
+ {no:'15', y:ROW.r15, x:X_R, name:'Output Logits', en:'官方对比表口径 · 专有 · 未开源', face:'OUTPUT', color:'#E5E7EB', side:1,
+  inner:[['输出仅文本','输入含图像'],['未开源权重','无 config.json'],['API + Azure + Bedrock','ChatGPT Plus/Pro/Business/Enterprise'],['2026-09-04 公开发布','03 日限量']],
+  d:{what:'输出层与开放方式，外加官方这一代最常被引用的一组成绩。',
+     how:['输出形态只有文本。本模型**未开源**：没有权重、没有 config.json、没有独立技术报告，只能通过 API / Azure / Bedrock 与 ChatGPT 各档订阅使用。',
+          '分发节奏：2026-09-03 限量给受信任机构；官方公告页对公开可用时间的表述是「随后**数日内**」向 Plus / Pro / Business / Enterprise 开放（第三方报道称首日 Plus/Pro 一度被挡在外）。Pro / Business / Enterprise 另有 **GPT-6 Astra Pro**；Enterprise 默认关闭、需管理员开启。',
+          '官方对比表里的其余成绩：ARC-AGI-3 **99.9%**（Sol 7.8%、Opus 5 30.2%）· ARC-AGI-2 95.0% · ARC-AGI-1 98.5% · FrontierMath Tier 4 (v2) **97.6%**（Sol 83.0%）· Terminal-Bench Science 0.1 64.6%（Sol 22.4%）· GPQA Diamond 96.0%（Sol 94.6%）· Humanity Last Exam（带工具）57.2% · HealthBench Professional（**length-adjusted**）63.4%（Sol 60.5%）。',
+          '⚠ **ARC-AGI-3 这一项必须连同 harness 一起读**（基准方 ARC Prize 官方口径）：Astra 在 **Provider Adapter harness** 下是 **99.9%**（每局约 $360、整套约 $19K），而在 **Standard（provider-neutral）harness** 下只有 **62.7%**。ARC Prize 公开了分档表（max 98.6%/62.7%、high 99.9%/54.8%、medium 98.4%/38.6%、low 98.0%/17.5%、none 96.7%/35.2%）。ARC Prize 总裁 Greg Kamradt 另指出，该成绩依赖昂贵 harness，且多支团队用类似 harness 也能拿到 90% 以上。官方对比表里的 99.9% 取自前者。',
+          'ARC Prize 官方还称 Astra 在 **96% 的关卡**用了比中位人类更少的动作步数，Kamradt 表述为「effectively reaching human parity」——这是测评方口径，不是 OpenAI 自评。',
+          '⚠ 一张表里的相对位置也要照实写：**Humanity Last Exam（带工具）57.2% 这一项，Astra 是低于对标模型的**（Claude Fable 5.1 65.0%、Fable 5 63.8%、Opus 5 63.6%）。本图不选择性呈现。',
+          '官方另披露一项数学成果：把**无穷多对素数最大间距**的界限从 246（以及 Stadlmann 改进后的 240）推进到 **186**，并改进了一个**超过 80 年未变**的素数大间距界限。'],
+     data:['输出：仅文本','未开源 · API / Azure / Bedrock','2026-09-04 公开发布'],
+     cmp:'2017 版是论文，没有服务化、没有授权模式、没有产品形态。'}},
+];
+
+/* =====================================================================
+   数据：左侧 —— Original Transformer (2017) 对照基线
+   ===================================================================== */
+const LEFT = [
+ {no:'A1', name:'Input Embedding + 位置编码', en:'正弦位置编码', face:'EMBED + PE', color:'#3F4B5B', side:-1,
+  inner:[['词表 Embedding','离散 token → 稠密向量'],['正弦位置编码','固定公式，与 embedding 相加']],
+  d:{what:'2017 版输入的起点：词表查表得到 embedding，再与固定公式生成的正弦位置向量相加。',
+     how:['位置信息以「加法」注入输入层，之后每一层都能看到。','正弦编码不需要训练，但外推能力有限。'],
+     data:['Transformer, 2017'], cmp:'→ GPT-6 Astra 的词表规模与位置编码方案官方均未披露，本图不推测。'}},
+ {no:'A2', name:'Masked Multi-Head Attention ×N', en:'因果掩码自注意力 · 该块重复 N 层', face:'MASKED MHA', color:'#4A5769', side:-1, stack:1,
+  inner:[['Q / K / V 投影','逐头线性映射'],['因果掩码','未来位置权重置为负无穷'],['逐头注意力','O(L²) 完整点积'],['每层独立 KV','层与层之间不共享']],
+  d:{what:'2017 版解码器的第一层注意力，用因果掩码保证每个位置只能看到自己和之前的位置。',
+     how:['掩码矩阵把未来位置的注意力权重置为负无穷。',
+          '每个位置都要对全体历史做 Q·K 点积，计算量随序列长度平方增长。',
+          '2017 版把「计算深度」写死为层数——每层只跑一次，这一点在右侧节点 04 / 05 关于「循环层」的争议里正好是参照物。'],
+     data:['因果掩码','O(L²) 复杂度','每层独立 KV'],
+     cmp:'→ GPT-6 Astra 的注意力机制（头数、KV 压缩方式、位置编码）官方均未披露。'}},
+ {no:'A3', name:'Add & Norm', en:'残差 + LayerNorm', face:'ADD & NORM', color:'#37404E', side:-1,
+  inner:[['残差相加','x + f(x) 单车道'],['LayerNorm','归一化，维持深层可训练']],
+  d:{what:'残差相加后做层归一化，保证深层网络可训练。',
+     how:['x + f(x) 的单车道残差设计一直沿用至今；这一层各代模型基本一致，不是本图的差异点。'],
+     data:['单流残差'], cmp:'→ GPT-6 Astra 的归一化形式与 eps 官方未披露。'}},
+ {no:'A4', name:'Multi-Head Cross-Attention', en:'K/V 来自 Encoder 输出', face:'CROSS-ATTN', color:'#4A5769', side:-1,
+  inner:[['Q 来自解码器','当前生成位置的表示'],['K / V 来自编码器','每次都要读编码器全长'],['逐层重复','每层各做一遍']],
+  d:{what:'解码器读取编码器输出的桥梁：Q 来自解码器，K/V 来自编码器。',
+     how:['这是 2017 版「编码器—解码器」的做法：跨注意力每层都重新对编码器全长做注意力。',
+          '如今的自回归大模型普遍取消编解码器分治，改为单栈主干（这是行业通例，不是官方对本模型的具体说明）。'],
+     data:['逐层跨注意力'], cmp:'→ 现代单栈主干没有跨注意力这一层。'}},
+ {no:'A5', name:'Add & Norm', en:'残差 + LayerNorm', face:'ADD & NORM', color:'#37404E', side:-1,
+  inner:[['残差相加','跨注意力输出'],['LayerNorm','归一化']],
+  d:{what:'跨注意力输出的残差与归一化。', how:['与前一处同构。'], data:['—'], cmp:'—'}},
+ {no:'A6', name:'Feed Forward（稠密）', en:'Dense FFN · 两层全连接', face:'DENSE FFN', color:'#4A5769', side:-1,
+  inner:[['Linear 升维','隐状态 → 中间维度'],['激活函数','非线性'],['Linear 降维','回到隐状态维度'],['全部参数激活','每个 token 都走完整 FFN']],
+  d:{what:'2017 版的 FFN 是稠密的：每个 token 都要经过全部参数。',
+     how:['结构是 Linear → 激活 → Linear，逐位置独立计算。',
+          '参数总量与每 token 计算量直接绑定：想变强就得整体变大，成本同步上升。',
+          '**这一代是否改用稀疏专家，官方没有任何披露**——网上关于「万亿参数 MoE」的说法出自 2026 年 4 月的发布前传闻类文章，与官方规格冲突且无官方出处，本图不采用。'],
+     data:['稠密激活'], cmp:'→ 是否稀疏化：官方未披露；传闻类估算本图不采用。'}},
+ {no:'A7', name:'Add & Norm', en:'残差 + LayerNorm', face:'ADD & NORM', color:'#37404E', side:-1,
+  inner:[['残差相加','FFN 输出'],['LayerNorm','归一化']],
+  d:{what:'FFN 输出的残差与归一化。', how:['与前两处同构。'], data:['—'], cmp:'—'}},
+ {no:'A8', name:'Linear', en:'隐状态 → 词表维度', face:'LINEAR', color:'#39424F', side:-1,
+  inner:[['线性投影','隐状态 → 词表大小'],['输出 Logits','未归一化分数']],
+  d:{what:'把最后一层隐状态投影到词表维度。',
+     how:['输出维度等于词表大小，得到每个 token 的未归一化分数（logits）。',
+          'GPT-6 Astra 的词表规模官方未披露，因此本图不填具体数字。'],
+     data:['词表投影'], cmp:'→ 输出词表规模：官方未披露。'}},
+ {no:'A9', name:'Softmax → 输出概率', en:'逐 token 采样', face:'SOFTMAX', color:'#39424F', side:-1,
+  inner:[['Softmax','logits → 概率分布'],['采样','按策略选出下一个 token'],['拼回输入','自回归循环']],
+  d:{what:'Softmax 把 logits 归一化成概率分布，按策略采样出下一个 token。',
+     how:['自回归：采出的 token 拼回输入，再跑下一次前向。',
+          '每一步都要重新读一遍不断增长的 KV Cache——这就是长上下文成本的来源，也是各家做上下文管理与缓存复用的动机。'],
+     data:['逐 token 自回归'], cmp:'→ GPT-6 Astra 移除了 temperature / top_p 等传统采样参数，改用推理档位控制（右侧节点 08）。'}},
+];
+
+/* =====================================================================
+   大白话讲解：给零基础读者的一段话。刻意不用术语，用生活类比。
+   ===================================================================== */
+const PLAIN = {
+'01':'喂给它的可以是文字，也可以是图片；但它只会用文字回你。不支持听、不支持说、也不支持视频。',
+'02':'它一次能记住的东西非常多（官方文档说约 105 万 token）。但这一格真正想讲的不是「多大」，而是它换了一种记笔记的方式：以前上下文写满了，模型会把前面内容压成一份摘要，压着压着细节就没了；现在改成「跨页保留笔记」，**前面的页还能被翻回来查**。注意——这改的是记笔记的方式，不是模型内部结构。',
+'03':'这一格是空的，而且是「故意空着」。官方这一代**一句架构参数都没披露**：多少参数、多少层、是不是混合专家、注意力怎么设计的、用了多少数据、强化学习用了什么算法——全部没有。官方唯一谈到「怎么做出来的」，就是一句话：把预训练、强化学习和对齐这三件事的投入合起来。网上那些「几万亿参数」的估算，都是别人按价格和算力倒推的，没有官方出处，我们不用。',
+'04':'这一格是整张图里**最需要带着怀疑读**的一格。很多报道说它用一种叫「循环深度」（也叫循环层）的技术：同一组网络层反复跑几遍，把「思考」放在内部数字里，而不是写成一篇文章。这条最早的出处是一家科技媒体的调查报道（引述知情人士），**官方对它既不证实也不否认**；你翻官方公告页、开发者文档和安全文档，这个词也一次都没出现。更关键的是，有专门追踪这件事的观察者指出：官方安全文档确立的是「不写思维链也能干更多活」这个**现象**，**并没有说循环就是它的原因**。另外网上还有个叫「Symphony」的架构名，那是发布前的传闻，给出的参数和官方对不上，也不是循环层的别名——别把两者混起来。所以我们把它单独摆出来，标题就叫「争议」。',
+'05':'上一格讲争议，这一格把它拆成「能确证」和「不能确证」两堆，给你一把尺子。**能确证的三件**：① 首席科学家公开发文说，这类前沿模型的计算图深度**和 GPT-4 相差不超过两倍**——注意这则发文其实是在**反驳**「架构出现剧变」的说法，所以它是对循环层说法的反证，不是支持；② 官方安全文档里明确说了一句：思维链可控性的变化**并非由任何架构改动导致**；③ 英国 AI 安全研究院的评估引出一条：**禁止它把思考写出来时，它能完成的任务范围可能提升约十倍**。**不能确证的两条**：“公司限制了循环次数”和“循环次数是 2 到 4”——这两条都只出现在一篇博客里，别处转述同一则发文时都没提，所以这版图不把它们当证据。',
+'06':'关于「这个模型是怎么做出来的」，官方**公告页**给出的全部信息就是一句话：把预训练、强化学习、对齐这三件事的多年投入合起来。安全文档里另有一节谈训练数据，也只多两句：数据经过处理管线过滤、推理模型用强化学习练成「先思考再作答」。没有数据量、没有数据构成、没有算法名。我们把它单独摆出来，就是想让你看清**官方公开的边界在哪**——边界之外的东西，我们一律不填。',
+'07':'训练规模这一条官方没给数字表，但研发负责人给了可以引用的量级：这是公司**迄今最大的一次训练**，而且是**第一次在超过十万块 GPU 上做预训练**，地点在得州。注意——**算力规模推不出参数量**，中间隔着一堆没公开的变量，所以别看到「十万块卡」就自己算参数。',
+'08':'它把「想多久」做成了一个旋钮，五档：从轻到重是 low、medium、high、xhigh、max。原来的温度、top_p 这些采样参数被移除了，旧的请求如果还带着这些参数，会直接报错。有一件事各家说法不一致：它到底能不能「完全不想」——有说不能、始终带推理的，也有说另有一个非推理模式的。我们只列能确证的五档，不替它下结论。',
+'09':'这一格是官方少见地**主动承认自己控制力下降**的一段，值得逐句看。官方原文大意是：评估发现它的**书面推理比上一代更难监控**（依据是那些明确要求它规避监控的测试）；它**在较简单任务上对「写什么」控制力更强**，而且**能用更少的文字步骤就把问题解掉**。官方补充说，复杂任务上它还是藏不住，但「这一下降趋势我们严肃对待」，并把「提升可监控性」列为研究优先事项。最后还有一句很重的话：**错位监控无法取代对齐**。',
+'10':'承接上一格：承认监控变难之后，官方给出的工程对策是——把监控做成产线上的一个组件。具体是一组分类器，检查模型的推理和行动有没有越出授权范围，一旦疑似越权就自动中止。官方同时强调：监控是兜底，不能替代对齐。这两句话放在一起才完整，只引其中一句都会失真。',
+'11':'这一代产品层面最大的变化：把「操作电脑」从试验功能提升为正式能力——通过人用的同一个界面去开浏览器、填表格、操作桌面软件。官方给的成绩：一个专业任务榜单 59.3%（上一代 53.6%），而且达到同样分数用的输出字数是竞争对手的约三分之一；另一个计算机操作榜单 72.6%，**每任务约 40 分钟**，而上一代是约 75 分钟拿 65.7%——官方说每任务省了约 47% 的时间。',
+'12':'这是它能接的东西的清单：联网、搜文件、生成图像、跑代码、开命令行、打补丁、技能、操作电脑、连 MCP、搜工具。接口上有三条不支持：不支持实时对话、不提供微调、不提供向量化。这些是官方文档里可以直接照抄的部分。',
+'13':'这些是价格和运营参数，不是架构信息。标准价是输入 $10 / 输出 $50 每百万 token，缓存命中 $1。**有个陷阱要当心**：单次请求输入超过 272K token 之后，**整单**改按输入 $20、输出 $75、缓存写入 $25 计费（输入与缓存翻倍、输出是一点五倍）——不是只对超出的部分加价。所以「窗口很大」不等于「可以随便往里灌」。',
+'14':'安全这一格，官方披露得比往常具体，因为它**第一次跨过了自家网络安全能力的「关键级」门槛**。因此上线版本会**拒绝**更高级的网安任务（比如写漏洞利用代码），更高级的能力只对受信任的安全防御者开放。官方还披露了一件事：评估过程中它**发现并利用了 2 个此前未知的零日漏洞**，两个都向维护者报告了。',
+'15':'最后几件事：它只输出文字；它**没有开源**，没有权重文件可下载，只能通过接口和微软 Azure、亚马逊 Bedrock 以及 ChatGPT 各档订阅使用；时间是 9 月 3 日限量、9 月 4 日公开。官方对比表里还有几个常被引用的数字：抽象推理测试从上一代的 7.8% 跳到 99.9%；高阶数学 97.6%；科学终端任务 64.6%。另外官方说它把「无穷多对素数最大间距」的界限从 246 推进到了 186，还改进了一个八十多年没动过的界限。',
+'A1':'老办法是把「词的意思」和「词的位置」两串数字直接加起来喂进去。简单直接，但位置是死记的固定公式，句子超出训练范围就不好使了。',
+'A2':'写第 5 个字的时候不能偷看第 6 个字，否则就是抄答案。所以用一个「遮罩」把后面的字盖住。麻烦在于：每写一个字都要回头看一遍前面所有字，文章越长越慢。另外它的层数写死了——每层只跑一遍，这正好是右边那条「循环层」争议的参照物。',
+'A3':'每算完一步都做两件事：先把这一步的结果和原来的值相加（相当于保留原话，别算着算着就忘了），再统一量一下尺度（防止数字越滚越大）。',
+'A4':'老办法里写答案的每一层都要重新翻一遍原文，越翻越贵。现在的模型普遍不分成「读的」和「写的」，从头到尾一个模型自己往下算。',
+'A5':'同上，每算完一步就「保留原话 + 统一尺度」。',
+'A6':'老办法这一层是「全员上岗」：不管来什么词，所有参数都得算一遍。想变强只能整体变大，成本跟着一起涨。现在大家都在想办法「按需叫人」——但这个模型官方没说它是怎么做的。',
+'A7':'同上，每算完一步就「保留原话 + 统一尺度」。',
+'A8':'把最后一层的内部表示，换算成「词表里每个词各得多少分」。词表有多大？这个模型官方没说。',
+'A9':'把分数换成概率（加起来刚好等于 1），然后抽签决定下一个字。抽完这个字要把它接回输入、再走一遍全过程——这就是它慢的根本原因，也是各种加速手段的动机所在。',
+'EXP_ON':'（本图未绘制专家池——该模型是否为混合专家架构官方未披露，画出阵列等于暗示已知专家数量。）',
+'EXP_OFF':'（本图未绘制专家池——该模型是否为混合专家架构官方未披露，画出阵列等于暗示已知专家数量。）'
+};
+
+/* =====================================================================
+   场景组装
+   ===================================================================== */
+/* 注：曾经画过「层间连接板」「底部纵深轨道」「×N 层叠薄片」三种装饰几何，均已移除。
+   原因：架构图里每个图元都会被默认读作"有含义的模块"，没有标注的几何一律会被误读
+   （实测被连续问过三次"这是什么"）。这些信息改用文字表达。 */
+
+/* （GPT-6 Astra 的架构参数官方全部未披露，本图既不画珠链也不画专家阵列，
+   所有「未披露」「争议」都只以节点形式呈现并在面板里给出正反证据。） */
+
+/* GPT-6 Astra 是否为混合专家架构、以及专家数量与路由策略，官方全部未披露，
+   因此本页不绘制专家池 —— 画出专家方块阵列会暗示已知的专家数量，
+   属于无依据的视觉表达。FANS 保持为空。 */
+const FANS = { };
+/* GPT-6 Astra 的专家配置（是否 MoE、数量、激活数、路由策略）官方从未披露，
+   因此本图不绘制专家池——画出专家阵列会暗示已知专家数量，属于无依据的视觉表达。 */
+
+/* =====================================================================
+   节点注册（统一可点击对象）
+   ===================================================================== */
+const NODES = [];      // 带标签的主模块
+const ALL   = [];      // 全部可点击对象（主模块 + 专家）
+
+RIGHT.forEach(b=>{
+  const el = makeBox({x:b.x, y:b.y, z:0, w:BW, h:BH, d:DEF_D, color:b.color, face:b.face, hit:true});
+  NODES.push(Object.assign({}, b, {wx:b.x, wy:b.y, wz:0, w:BW, h:BH, bd:DEF_D, el:el, label:true, idx:ALL.length}));
+  ALL.push(NODES[NODES.length-1]);
+});
+LEFT.forEach((b,i)=>{
+  const y = LROW[i];
+  const el = makeBox({x:X_L, y:y, z:0, w:BW, h:BH, d:DEF_D, color:b.color, face:b.face, hit:true,
+                      border:'rgba(255,255,255,.10)'});
+  NODES.push(Object.assign({}, b, {wx:X_L, wy:y, wz:0, w:BW, h:BH, bd:DEF_D, el:el, label:true, idx:ALL.length}));
+  ALL.push(NODES[NODES.length-1]);
+});
+Object.keys(FANS).forEach(k => FANS[k].forEach(n => { n.idx = ALL.length; ALL.push(n); }));
+
+/* =====================================================================
+   色块内部结构：把每个模块的 inner 子组件做成薄板，藏在色块体内。
+   放大到 150% 以上、且该块被选中时整体 X 光化、薄板显形 —— 结构可见。
+   ⚠ 薄板上不挂层名。试过多种排布都不成立：贴体内叠放投影几乎重合（层名互压）；
+     沿 z 抽开则总有一半跑到相邻色块的地盘（层距 42，远小于展开纵深）；
+     沿 x 扇形铺开时薄板自身有宽度，间距必须超过板宽才不互相遮挡。
+     所以层名交给右侧面板的等距分解图 —— 一屏读完，且不破坏 3D 可读性。
+   薄板沿竖直方向等分排布（上下叠），而不是沿纵深排：沿纵深排时各片在屏幕上会横着
+   铺成一长条、几乎填满外壳轮廓，而外壳 X 光后边缘很淡，看起来就像"内层溢出到外面"。
+   尺寸留出内边距，保证严格落在外壳体内：y ±(BH-5)/2、x ±(BW-16)/2、z ±(bd-10)/2。
+   ===================================================================== */
+NODES.forEach(n=>{
+  if (!n.inner || !n.inner.length) return;
+  const cnt  = n.inner.length;
+  const innerH = BH - 5;
+  const slot = innerH / cnt;
+  const ph   = Math.max(2, slot - 1.6);
+  n.plates = [];
+  for (let k = 0; k < cnt; k++){
+    const y = n.wy - innerH/2 + slot*(k + 0.5);   // k=0 在最下，与面板等距图「自下而上」一致
+    const lift = cnt > 1 ? 0.16 + 0.16*(k/(cnt-1)) : 0.24;
+    const el = makeBox({
+      x: n.wx, y: y, z: 0,
+      w: BW - 16, h: ph, d: n.bd - 10,
+      color: n.color, border: 'rgba(255,255,255,.30)',
+      faces: ['front','top','right','left'], boxCls: 'plate'
+    });
+    const f = el.querySelector('.f-front'), t = el.querySelector('.f-top'),
+          r = el.querySelector('.f-right'), l = el.querySelector('.f-left');
+    if (f) f.style.background = shadeA(n.color, lift, 1);
+    if (t) t.style.background = shadeA(n.color, lift + 0.30, 1);
+    if (r) r.style.background = shadeA(n.color, lift - 0.22, 1);
+    if (l) l.style.background = shadeA(n.color, lift - 0.38, 1);
+    n.plates.push(el);
+  }
+});
+
+/* 开关：色块「打开 / 合上」。这里是整体 X 光，不是只把正面变透明 ——
+   薄板贴在体内，若背面/底面仍不透明就会把后几层挡住。
+   各面按原本的受光关系取不同透明度，变透明后仍能读出一块方体的体积感。
+   透明度必须写在内联样式上，不能设在 .box 上 —— 透明度会让 preserve-3d 被扁平化。 */
+const XA = { front:[0.06,0.13], top:[0.40,0.27], right:[-0.18,0.21],
+             left:[-0.35,0.15], bottom:[-0.50,0.17], back:[-0.50,0.09] };
+const OPEN_ZOOM = 1.5;                 // 打开内部结构所需的缩放倍率
+function setNodeOpen(n, on){
+  if (!n || !n.el) return;
+  n.el.classList.toggle('open', on);
+  n.el.querySelectorAll('.face').forEach(f=>{
+    if (f._bg === undefined) f._bg = f.style.background;
+    if (f._bc === undefined) f._bc = f.style.borderColor;
+    const key = (f.className.match(/f-(\w+)/) || [0,'front'])[1];
+    const a = XA[key] || XA.front;
+    f.style.background = on ? shadeA(n.color, a[0], a[1]) : f._bg;
+    // 打开时把壳的棱线提亮：X 光后边缘太淡，观众看不出"内层到底有没有出框"
+    f.style.borderColor = on ? 'rgba(255,255,255,.34)' : f._bc;
+  });
+  if (n.plates) n.plates.forEach(e => e.classList.toggle('vis', on));
+}
+let openedNode = null;
+/* 只有「放大到 150% 以上」且「这一块被选中」时才打开内部结构；
+   其余色块保持实心 —— 全部一起打开会让整张图变成一片条纹，反而看不清。 */
+function applyOpen(){
+  const want = (uz >= OPEN_ZOOM && selected && selected.plates) ? selected : null;
+  if (want === openedNode) return;
+  setNodeOpen(openedNode, false);
+  openedNode = want;
+  setNodeOpen(openedNode, true);
+}
+
+/* 分组范围（2D 投影括号） */
+const GROUPS = [
+  {x1:X_R-BW/2-18, x2:X_R+BW/2+18, y1:ROW.r01+BH/2+16, y2:ROW.r02-BH/2-16,
+   t:'OFFICIALLY DISCLOSED',   lx:X_R-BW/2-120, ly:ROW.r01+BH/2+36, anchor:'end'},
+  {x1:X_R-BW/2-18, x2:X_R+BW/2+18, y1:ROW.r03+BH/2+16, y2:ROW.r05-BH/2-16,
+   t:'ARCHITECTURE · 未披露 + 争议',   lx:X_R-BW/2-120, ly:ROW.r03+BH/2+36, anchor:'end'},
+  {x1:X_R-BW/2-18, x2:X_R+BW/2+18, y1:ROW.r06+BH/2+16, y2:ROW.r09-BH/2-16,
+   t:'TRAINING · MONITORABILITY',   lx:X_R-BW/2-120, ly:ROW.r06+BH/2+36, anchor:'end'},
+  {x1:X_R-BW/2-18, x2:X_R+BW/2+18, y1:ROW.r10+BH/2+16, y2:ROW.r15-BH/2-16,
+   t:'PRODUCT / SAFETY / SERVICE',   lx:X_R-BW/2-120, ly:ROW.r10+BH/2+36, anchor:'end'},
+  {x1:X_L-BW/2-16, x2:X_L+BW/2+16, y1:LROW[0]+BH/2+16, y2:LROW[8]-BH/2-16,
+   t:'ORIGINAL TRANSFORMER  2017', lx:X_L+BW/2+26, ly:LROW[0]+BH/2+36, anchor:'start'}
+];
+
+/* ---------- 图例 / 指标 ---------- */
+const LEGEND = [
+  ['#3B82F6','输入 / 输出模态'], ['#14B8A6','长上下文 / 跨窗口笔记'], ['#64748B','官方未披露'],
+  ['#8B5CF6','争议机制（归属存疑）'], ['#0EA5E9','相邻可确证事实'], ['#F59E0B','官方方法论口径'],
+  ['#7C3AED','训练规模'], ['#EC4899','推理档位'], ['#EF4444','可监控性下降 ★'],
+  ['#FB7185','监控部署'], ['#2DD4BF','Computer Use'], ['#38BDF8','工具与 API'],
+  ['#A855F7','服务规格与定价'], ['#22D3EE','安全门槛'], ['#E5E7EB','输出'],
+  ['#475569','2017 对照基线']
+];
+document.getElementById('legend').innerHTML =
+  LEGEND.map(([c,t]) => '<span class="lg"><i style="background:' + c + '"></i>' + t + '</span>').join('');
+
+const METRICS = [
+  ['约 1.05M','CONTEXT','官方文档口径'],
+  ['99.9%','ARC-AGI-3','官方对比表（Sol 7.8%）'],
+  ['59.3%','AGENTS LAST EXAM','官方对比表（Sol 53.6%）'],
+  ['72.6%','OSWORLD 2.0','官方：每任务少约 47% 时间'],
+  ['97.6%','FRONTIERMATH T4','官方对比表（Sol 83.0%）'],
+  ['$10 / $50','PRICING / M TOKENS','超 272K 输入：2× 输入与缓存 · 1.5× 输出'],
+  ['文本 + 图像','INPUT','输出仅文本'],
+  ['未披露','PARAMS / LAYERS','官方未披露架构',1]
+];
+document.getElementById('metrics').innerHTML = METRICS.map(([v,e,z,a]) =>
+  '<div class="m' + (a?' acc':'') + '"><u>' + v + '</u><span class="e">' + e +
+  '</span><span class="z">' + z + '</span></div>').join('');
+
+/* ---------- 等距内部结构图（SVG） ---------- */
+function isoStack(items, color){
+  const N = items.length, W = 110, D = 80, T = 14, GAP = 34;
+  const K = 0.866, J = 0.5;
+  const P = (x,y,z) => [ (x-z)*K, (x+z)*J - y ];
+  const pts = a => a.map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
+  let g = '';
+  for (let i=0;i<N;i++){
+    const y0 = i*GAP, y1 = y0 + T;
+    const x1 = -W/2, x2 = W/2, z1 = -D/2, z2 = D/2;
+    const top = [P(x1,y1,z1),P(x1,y1,z2),P(x2,y1,z2),P(x2,y1,z1)];
+    const fr  = [P(x1,y0,z2),P(x2,y0,z2),P(x2,y1,z2),P(x1,y1,z2)];
+    const rt  = [P(x2,y0,z1),P(x2,y0,z2),P(x2,y1,z2),P(x2,y1,z1)];
+    // 自下而上绘制：先侧面后顶面
+    g += '<polygon points="' + pts(rt) + '" fill="' + shade(color,-0.40) + '" stroke="rgba(255,255,255,.10)"/>';
+    g += '<polygon points="' + pts(fr) + '" fill="' + shade(color,-0.10) + '" stroke="rgba(255,255,255,.16)"/>';
+    g += '<polygon points="' + pts(top) + '" fill="' + shade(color, 0.30) + '" stroke="rgba(255,255,255,.18)"/>';
+    // 引线 + 文字
+    const lx = P(x2,y1,z2)[0], ly = P(x2,y1,z2)[1];
+    const tx = (W/2 + D/2)*K + 12, ty = (x2+z2)*J - y1 - 2;
+    g += '<path class="iso-line" d="M' + lx.toFixed(1) + ',' + ly.toFixed(1) + 'L' + (tx-6) + ',' + ty.toFixed(1) + '"/>';
+    g += '<text class="ty" x="' + tx + '" y="' + ty.toFixed(1) + '">' + NUM[i] + ' ' + items[i][0] + '</text>';
+    g += '<text class="td" x="' + tx + '" y="' + (ty+13) + '">' + items[i][1] + '</text>';
+  }
+  const yTop = -47.5 - ((N-1)*GAP + T) - 10;
+  const yBot = 47.5 + 10;
+  const vb = (-92) + ' ' + yTop.toFixed(1) + ' ' + (92 + 100 + 224) + ' ' + (yBot - yTop).toFixed(1);
+  return '<svg class="iso" viewBox="' + vb + '" preserveAspectRatio="xMinYMin meet">' + g + '</svg>';
+}
+
+/* ---------- 标签（仅主模块） ---------- */
+const labelStore = [];
+NODES.forEach(n=>{
+  const el = document.createElement('div');
+  el.className = 'lbl';
+  let en = n.en || '';
+  if (n.side < 0) en = '';
+  else if (en.length > 20) en = en.slice(0,19) + '…';
+  el.innerHTML = '<span class="no">' + n.no + '</span><b>' + n.name + '</b>' +
+                 (en ? '<span class="en">' + en + '</span>' : '');
+  el.addEventListener('click', e=>{ e.stopPropagation(); select(n); });
+  el.addEventListener('mouseenter', ()=> hover(n, true));
+  el.addEventListener('mouseleave', ()=> hover(n, false));
+  labelsEl.appendChild(el);
+  labelStore.push({node:n, el:el});
+});
+
+/* ---------- SVG 元素池：连线 / 括号只创建一次，之后每帧只改属性 ----------
+   原先每帧 `wires.innerHTML = '...'` 会重建四十多个 DOM 节点，60fps 下就是每秒数千次
+   字符串解析 + 节点创建销毁 —— 这是本页最大的一笔 CPU 开销。 */
+const NSV = 'http://www.w3.org/2000/svg';
+function svgNode(tag, attrs){
+  const e = document.createElementNS(NSV, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  wires.appendChild(e);
+  return e;
+}
+measureView();
+const gPolys = GROUPS.map(()=> svgNode('polygon', {fill:'none', stroke:'rgba(255,255,255,.15)',
+  'stroke-width':1, 'stroke-linejoin':'round'}));
+const gTexts = GROUPS.map(gr=>{
+  const t = svgNode('text', {fill:'rgba(255,255,255,.36)', 'font-family':'ui-monospace,Menlo,monospace',
+    'font-size':9.5, 'letter-spacing':1.5, 'text-anchor':gr.anchor});
+  t.textContent = gr.t;
+  return t;
+});
+const lPaths = [], lDots = [];
+labelStore.forEach(o=>{
+  lPaths.push(svgNode('path', {fill:'none', stroke:'rgba(255,255,255,.19)', 'stroke-width':1}));
+  lDots.push(svgNode('circle', {r:2.2, fill:o.node.color}));
+});
+
+/* ---------- 每帧布局 ---------- */
+function layout(){
+  const m = M();
+  stage.style.perspective = (P0 * m).toFixed(2) + 'px';   // 与场景同比缩放 = 纯光学变焦
+  world.style.transform = 'translateX(' + (panX + upx).toFixed(1) + 'px) translateY(' + upy.toFixed(1) +
+                          'px) rotateX(' + thx + 'deg) rotateY(' + thy + 'deg) scale3d(' +
+                          m.toFixed(5) + ',' + m.toFixed(5) + ',' + m.toFixed(5) + ')';
+
+  /* 标签字号跟随缩放：否则窄屏/面板展开把图缩小时，标签仍是原尺寸，
+     会把方块挤成一团而标签占满屏，且防重叠间距（固定 px）会远超方块间距。
+     放大时也给一点跟随（上限 1.9），不然 600% 下方块很大而标注还是 11px。 */
+  const ls = Math.max(0.72, Math.min(1.9, m));
+  if (labelsEl._ls !== ls){ labelsEl._ls = ls; labelsEl.style.setProperty('--ls', ls.toFixed(3)); }
+
+  /* 放大且选中时，把这一块的内部结构打开 */
+  applyOpen();
+
+  GROUPS.forEach((gr, i)=>{
+    const a = project(gr.x1, gr.y1, 0), b = project(gr.x2, gr.y1, 0);
+    const c = project(gr.x2, gr.y2, 0), d = project(gr.x1, gr.y2, 0);
+    gPolys[i].setAttribute('points',
+      [a,b,c,d].map(p=>p.sx.toFixed(1)+','+p.sy.toFixed(1)).join(' '));
+    const lp = project(gr.lx, gr.ly, 0);
+    gTexts[i].setAttribute('x', lp.sx.toFixed(1));
+    gTexts[i].setAttribute('y', lp.sy.toFixed(1));
+  });
+
+  const panes = {'1':[], '-1':[]};
+  labelStore.forEach(o=>{
+    const n = o.node;
+    const pop = (popped === n) ? 1 : 0;
+    const k = 1 + pop*0.07, zz = n.wz + pop*46;
+    const p = project(n.wx*k + (n.side > 0 ?  BW/2*k + 4 : -(BW/2*k + 4)), n.wy*k, zz);
+    const h = project(n.wx*k, n.wy*k, zz);
+    o.ax = p.sx; o.ay = p.sy; o.hx = h.sx;
+    panes[n.side > 0 ? '1' : '-1'].push(o);
+  });
+  ['1','-1'].forEach(k=>{
+    const arr = panes[k].sort((a,b)=> a.ay - b.ay);
+    let prev = -1e9;
+    arr.forEach(o=>{ o.ly = Math.max(o.ay, prev + 26*ls); prev = o.ly; });
+  });
+
+  labelStore.forEach((o, i)=>{
+    const n = o.node, gap = 15, on = selected === n;
+    const dim = demo && !on && n !== demoPrev;      // 上一步保持亮，箭头两端都看得清
+    o.el.classList.toggle('on', on);
+    let d;
+    if (n.side > 0){
+      o.el.style.left = (o.ax + gap) + 'px';
+      o.el.style.transform = 'translateY(-50%)';
+      d = 'M' + o.ax + ',' + o.ay + 'L' + (o.hx + 12) + ',' + o.ay + 'L' + (o.ax + gap - 3) + ',' + o.ly;
+    } else {
+      o.el.style.left = (o.ax - gap) + 'px';
+      o.el.style.transform = 'translate(-100%,-50%)';
+      d = 'M' + o.ax + ',' + o.ay + 'L' + (o.hx - 12) + ',' + o.ay + 'L' + (o.ax - gap + 3) + ',' + o.ly;
+    }
+    o.el.style.top = o.ly + 'px';
+    o.el.style.opacity = dim ? '0.22' : '';
+    lPaths[i].setAttribute('d', d);
+    lPaths[i].setAttribute('stroke', dim ? 'rgba(255,255,255,.055)' : 'rgba(255,255,255,.19)');
+    lDots[i].setAttribute('cx', o.ax.toFixed(1));
+    lDots[i].setAttribute('cy', o.ay.toFixed(1));
+    lDots[i].setAttribute('fill-opacity', dim ? 0.2 : 1);
+  });
+}
+
+/* ---------- 演示用的 3D 弯曲箭头 ----------
+   形态：从「上一色块」的左缘伸出一根弯管，向左鼓出一段弧，再弯回「当前色块」的
+   左侧三分之一处；颜色取源色块的颜色；末端是沿切线方向的锥形箭头。
+   跑马灯 = 三颗光点沿曲线单向跑动（位置由 tick 逐帧写入，仅演示期间）。
+   ⚠ 管身由间距远小于自身尺寸的同色方块叠成，才读作一根连续弯管；
+     若方块之间有可见间隙、或各自带明显边框，就会退化成"梯子"（上一版被用户指出过）。 */
+const ARC_Z = 22, ARC_N = 26, ARC_HEAD = 4;
+let arcEls = [], arcPts = [], arcT = 0, arcCtl = null;
+
+function arcAt(t){
+  const u = 1 - t, p = arcCtl;
+  return { x: u*u*p.sx + 2*u*t*p.cx + t*t*p.ex,
+           y: u*u*p.sy + 2*u*t*p.cy + t*t*p.ey };
+}
+function arcPos(f){
+  if (arcPts.length < 2) return {x:0, y:0};
+  const k = f * (arcPts.length - 1);
+  const i = Math.min(arcPts.length - 2, Math.max(0, Math.floor(k)));
+  const r = k - i, a = arcPts[i], b = arcPts[i + 1];
+  return { x: a.x + (b.x - a.x) * r, y: a.y + (b.y - a.y) * r };
+}
+const RUNNER_N = 3, FADE = 0.16;      // 光点个数 / 两端淡入淡出的区间比例
+const arrowRunners = Array.from({length: RUNNER_N}, ()=> makeBox({
+  x:0, y:0, z:ARC_Z + 7, w:8, h:8, d:8, color:'#FFFFFF',   // 比管身细，才读作"光点"而不是白管子
+  border:'rgba(255,255,255,.9)', faces:['front','top','right','left'], boxCls:'abead'}));
+/* 光点一律沿 f: 0→1 单向移动（0 = 源色块，1 = 目标色块），也就是「从上一层流入下一层」。
+   ⚠ 两端必须淡入淡出：光点跑到 f=1 后会取模跳回 f=0，不淡化的话观众看到的就是
+   "光点到了箭头尖端又瞬间弹回起点"，方向感会被这个回跳彻底破坏。
+   淡化之后读作"从上一层流出、没入下一层"，循环点不可见。 */
+function moveRunners(){
+  if (arcPts.length < 2) return;
+  arrowRunners.forEach((el, i) => {
+    const f = (arcT + i / RUNNER_N) % 1;
+    const p = arcPos(f);
+    el.style.transform = 'translate3d(' + p.x.toFixed(1) + 'px,' + (-p.y).toFixed(1) +
+                         'px,' + (ARC_Z + 7) + 'px)';
+    const a = Math.max(0, Math.min(1, f / FADE, (1 - f) / FADE));
+    el.querySelectorAll('.face').forEach(fc => { fc.style.opacity = a.toFixed(2); });
+  });
+}
+function advanceArrow(dt){
+  if (arcPts.length < 2) return;
+  arcT = (arcT + dt / 1500) % 1;      // 约 1.5 秒跑完全程
+  moveRunners();
+}
+function clearArrow(){
+  arcEls.forEach(e => e.remove());
+  arcEls = []; arcPts = [];
+}
+/* 起终点：源色块左缘 → 当前色块左侧三分之一处；控制点向左鼓出形成弯弧 */
+function placeArrow(cur, prev){
+  clearArrow();
+  const color = (prev || cur).color;
+  // 整根箭头放在色块【左侧】：从源色块左缘伸出、向左鼓出弯弧、再回到目标色块左三分之一
+  const sx = X_R - BW/2 - 4, sy = (prev ? prev.wy : cur.wy - 46) - 8;
+  const ex = X_R - 68,       ey = cur.wy - 7;
+  // 控制点取 -128：弧最左约在 x≈45，既在分组括号左缘（35）以内，
+  // 又完全避开 MoE 行左侧的专家池（最右到 41）—— 鼓幅再大就会压住那些可点击的小方块。
+  arcCtl = { sx:sx, sy:sy, ex:ex, ey:ey, cx:X_R - 128, cy:(sy + ey) / 2 + 10 };
+  for (let i = 0; i <= ARC_N; i++) arcPts.push(arcAt(i / ARC_N));
+
+  // 切线角：让方块本地 -y 对准曲线方向（rotZ）。管身每段都跟着切线转，
+  // 于是各段的横截面始终垂直于路径，扫出来是连续曲面而不是一摞台阶。
+  const tangentAt = t => {
+    const a = arcAt(Math.max(0, t - 0.05)), b = arcAt(Math.min(1, t + 0.05));
+    const dx = b.x - a.x, dy = b.y - a.y, L2 = Math.hypot(dx, dy) || 1;
+    return Math.atan2(dx / L2, dy / L2) * 180 / Math.PI;
+  };
+  // 管身：同色方块沿切线排布并大幅重叠 → 读作一根连续弯管
+  for (let i = 0; i < ARC_N - 1; i++){
+    const p = arcPts[i];
+    arcEls.push(makeBox({x:p.x, y:p.y, z:ARC_Z, w:12, h:7, d:12,
+                         rotZ:tangentAt(i / ARC_N),
+                         color:color, border:'rgba(0,0,0,0)',   // 分段带边框会在内侧露出锯齿
+                         faces:['front','top','right','left'], boxCls:'abead'}));
+  }
+  // 箭头：沿末端切线方向的 4 级收窄锥
+  const th = tangentAt(0.95);
+  for (let k = 0; k < ARC_HEAD; k++){
+    const q = k / (ARC_HEAD - 1);
+    const p = arcAt(0.86 + 0.14 * q);
+    const w = 21 - 16 * q;                // 21 → 5，与管身 12 宽衔接更自然
+    arcEls.push(makeBox({x:p.x, y:p.y, z:ARC_Z, w:w, h:9, d:w * 0.85, rotZ:th,
+                         color: k === ARC_HEAD - 1 ? '#FFFFFF' : color,
+                         border:'rgba(255,255,255,.5)',
+                         faces:['front','top','right','left'], boxCls:'abead'}));
+  }
+  arcT = 0;
+  moveRunners();
+}
+/* ---------- 自动演示：从输入到输出逐步走完整个前向链路 ---------- */
+const DEMO_DUR = 5200;            // 每步停留时长（毫秒）
+const DEMO_STEPS = ['01','02','03','04','05','06','07','08','09','10','11','12','13','14','15']
+  .map(no => NODES.find(n => n.no === no)).filter(Boolean);
+let demo = false, demoDone = false, demoIdx = 0, demoTimer = null, demoStart = 0, doneTimer = null;
+let demoPrev = null;               // 上一步的模块：它的标注不压暗，好让「从哪来」也看得见
+const demoHud = document.getElementById('demoHud');
+const dStep = document.getElementById('dStep');
+const dName = document.getElementById('dName');
+const dBar  = document.getElementById('dBar');
+const btnDemo = document.getElementById('btnDemo');
+
+function syncDemoBtn(){
+  btnDemo.classList.toggle('stop', demo);
+  btnDemo.textContent = demo ? '■ 停止' : '▶ 演示';
+  demoHud.classList.toggle('on', demo || demoDone);
+  demoHud.classList.toggle('done', !demo && demoDone);
+}
+/* 步骤推进用 setTimeout 计时，不依赖 rAF —— rAF 在后台标签页/无头环境会被节流或暂停，
+   而进度条的平滑推进可以交给 rAF（纯视觉，掉帧不影响流程）。 */
+function showDemoStep(){
+  const n = DEMO_STEPS[demoIdx];
+  if (!n) return;
+  select(n, true);
+  dStep.textContent = String(demoIdx + 1).padStart(2,'0') + ' / ' + DEMO_STEPS.length;
+  dName.textContent = n.name;                 // 编号已在进度里，这里不再重复
+  demoPrev = demoIdx > 0 ? DEMO_STEPS[demoIdx - 1] : null;
+  placeArrow(n, demoPrev);
+  dBar.style.width = '0%';
+  demoStart = performance.now();
+  clearTimeout(demoTimer);
+  demoTimer = setTimeout(nextDemo, DEMO_DUR);
+}
+function nextDemo(){
+  if (!demo) return;
+  demoIdx++;
+  if (demoIdx >= DEMO_STEPS.length) finishDemo();
+  else showDemoStep();
+}
+function startDemo(){
+  demo = true; demoDone = false; demoIdx = 0;
+  world.classList.add('demo');
+  auto = false; syncAuto();
+  if (thx < 12) thx = 21;                     // 太低的角度看不清层叠，抬起来
+  panTarget = panFor();
+  demoHud.classList.add('on'); demoHud.classList.remove('done');
+  showDemoStep();
+  syncDemoBtn();
+  kick();
+}
+function stopDemo(){
+  demo = false; demoDone = false;
+  world.classList.remove('demo');
+  clearTimeout(demoTimer); demoTimer = null;
+  clearTimeout(doneTimer); doneTimer = null;
+  dBar.style.width = '0%';
+  syncDemoBtn();
+  layout();
+}
+function finishDemo(){
+  demo = false; demoDone = true;
+  world.classList.remove('demo');
+  clearTimeout(demoTimer); demoTimer = null;
+  dBar.style.width = '100%';
+  dStep.textContent = '完成';
+  dName.textContent = '已走完输入 → 输出全部 ' + DEMO_STEPS.length + ' 个阶段，可点击任意色块自由查看';
+  syncDemoBtn();
+  layout();
+  kick();
+  clearTimeout(doneTimer);
+  doneTimer = setTimeout(()=>{ demoDone = false; syncDemoBtn(); }, 6000);   // 完成后自动收起 HUD
+}
+/* 演示 / 停止二合一：同一个按钮切换。空格键同效（见键盘处理）。 */
+function toggleDemo(){
+  if (demo) stopDemo();
+  else { clearTimeout(doneTimer); demoDone = false; startDemo(); }
+}
+btnDemo.onclick = toggleDemo;
+
+/* ---------- 交互 ---------- */
+let selected = null, popped = null, drag = null, justDragged = false;
+let hoverNode = null, hoverTimer = null;
+const panel = document.getElementById('panel'), pDot = document.getElementById('pDot');
+const HL = 'inset 0 1px 0 rgba(255,255,255,.26), inset 0 0 0 1px rgba(255,255,255,.05)';
+const POP = ' translateZ(24px) scale3d(1.035,1.035,1.035)';   // 幅度小一点，边缘不易抖
+const HOVER_GRACE = 170;                                      // 移出后的宽限期（毫秒）
+const glow = n => '0 0 26px ' + n.color + ', 0 0 54px ' + n.color + '55, ' + HL;
+
+function popBox(n, on){
+  if (!n.el) return;
+  n.el.style.transform = n.el._base + (on ? POP : '');
+  n.el.querySelectorAll('.face').forEach(f=>{
+    f.style.zIndex = on ? '5' : '';
+  });
+}
+/* 悬浮反馈。两个约束：
+   ① 放大态（≥150%）下不做任何 hover 反馈 —— 那时色块本来就大，一点位移就会让
+      光标落到相邻块上，来回触发；用户此时是在「查看」，不需要悬浮提示。
+   ② 移出后延迟 HOVER_GRACE 再收起。色块弹出后会朝光标方向长大/前移，光标很容易
+      被挤出边缘 → 立刻收起 → 又落回来 → 再次弹出，形成高频闪烁。加宽限期即可消除。 */
+function hover(n, on){
+  if (!n.el || !n.el._front) return;
+  if (uz >= OPEN_ZOOM){                       // 放大态：只有选中态保留光晕
+    n.el._front.style.boxShadow = (selected === n) ? glow(n) : HL;
+    return;
+  }
+  clearTimeout(hoverTimer); hoverTimer = null;
+  if (on){
+    if (hoverNode && hoverNode !== n) applyHover(hoverNode, false);
+    hoverNode = n;
+    applyHover(n, true);
+  } else {
+    hoverTimer = setTimeout(()=>{
+      if (hoverNode === n){ applyHover(n, false); hoverNode = null; }
+    }, HOVER_GRACE);
+  }
+}
+function applyHover(n, on){
+  if (!n.el || !n.el._front) return;
+  n.el._front.style.boxShadow = (on || selected === n) ? glow(n) : HL;
+  if (n.expert) return;                       // 专家块不弹出，避免阵列散架
+  if (on){ if (popped !== n){ popBox(n, true); popped = n; } }
+  else if (popped === n && selected !== n){ popBox(n, false); popped = null; }
+}
+function select(n, fromDemo){
+  if (!fromDemo && demo) stopDemo();          // 演示中手动点击 → 自动接管，停止演示
+  clearTimeout(hoverTimer); hoverTimer = null;
+  if (hoverNode && hoverNode !== n){ applyHover(hoverNode, false); hoverNode = null; }
+  if (selected && selected !== n){
+    selected.el._front.style.boxShadow = HL;
+    if (!selected.expert) popBox(selected, false);
+  }
+  selected = n;
+  if (uz >= OPEN_ZOOM){                       // 放大态不做弹出，避免查看时位移
+    if (n.el._front) n.el._front.style.boxShadow = glow(n);
+    if (popped && popped !== n){ popBox(popped, false); popped = null; }
+  } else {
+    applyHover(n, true);
+    popped = n.expert ? null : n;
+  }
+  applyOpen();                                // 选中变了 → 重新决定哪一块打开内部结构
+  pDot.style.background = n.color;
+  document.getElementById('pNo').textContent = n.no + (n.star ? '　★ KEY CHANGE' : (n.expert ? '　· 专家池节点' : ''));
+  document.getElementById('pName').textContent = n.name;
+  document.getElementById('pEn').textContent = n.en || '';
+  const d = n.d;
+  let html = '';
+  if (n.expert){
+    const own = ALL.find(v=> v.fan === n.ownerKey && !v.expert);
+    if (own) html += '<div class="sec"><div class="owner" data-own="' + n.ownerKey +
+      '"><i style="background:' + own.color + '"></i>所属模块：' + own.no + ' ' + own.name + '　→ 查看主模块</div></div>';
+  }
+  html += '<div class="sec"><h4>它在做什么</h4><p>' + d.what + '</p></div>';
+  if (n.inner && n.inner.length)
+    html += '<div class="sec"><h4>模块内部结构（放大视图）</h4>' + isoStack(n.inner, n.color) +
+            '<div class="iso-cap">自下而上 = 前向计算顺序，① 最先执行</div></div>';
+  html += '<div class="sec"><h4>内部原理</h4><ul>' + d.how.map(x=>'<li>'+x+'</li>').join('') + '</ul></div>';
+  const plain = PLAIN[n.no] || (n.expert ? (n.active ? PLAIN.EXP_ON : PLAIN.EXP_OFF) : '');
+  if (plain)
+    html += '<div class="sec plain"><h4>大白话讲解<em>不用术语</em></h4><p>' + plain + '</p></div>';
+  html += '<div class="sec"><h4>关键数据</h4><div class="chips">' +
+            d.data.map(x=>'<span class="chip">'+x+'</span>').join('') + '</div></div>' +
+          (d.cmp && d.cmp !== '—'
+            ? '<div class="sec"><h4>对照 2017 版</h4><div class="cmp">' + d.cmp + '</div></div>' : '');
+  const body = document.getElementById('pBody');
+  body.innerHTML = html;
+  const ow = body.querySelector('.owner');
+  if (ow) ow.onclick = ()=>{
+    const own = ALL.find(v=> v.fan === ow.getAttribute('data-own') && !v.expert);
+    if (own) select(own);
+  };
+  const wasOpen = panel.classList.contains('open');
+  panel.classList.add('open');
+  body.scrollTop = 0;
+  panTarget = panFor();
+  if (!wasOpen) fitZoom();      // 面板吃掉右侧宽度，可用区变小必须重新拟合（否则右侧标注被面板盖住）
+  layout();
+  kick();
+}
+document.getElementById('pClose').onclick = ()=>{
+  if (selected){ selected.el._front.style.boxShadow = HL; popBox(selected, false); }
+  selected = null; popped = null; panel.classList.remove('open');
+  applyOpen();
+  panTarget = panFor();
+  fitZoom();
+  layout();
+  kick();
+};
+ALL.forEach(n=>{
+  n.el.addEventListener('click', e=>{ e.stopPropagation(); if (!justDragged) select(n); });
+  n.el.addEventListener('mouseenter', ()=> hover(n, true));
+  n.el.addEventListener('mouseleave', ()=> hover(n, false));
+});
+
+/* 拖动 = 旋转；空格 + 拖动（或 Shift + 拖动）= 自由平移，不夹边界，像无限画布 */
+function down(x, y, panMode, bySpace){
+  if (bySpace) spacePanned = true;            // 空格被用于拖动了 → keyup 时不再切换演示
+  drag = {x:x, y:y, tx:thx, ty:thy, px:upx, py:upy, pan:!!panMode, moved:false};
+  stage.classList.add('dragging'); auto = false; syncAuto();
+}
+function move(x,y){
+  if (!drag) return;
+  const dx = x - drag.x, dy = y - drag.y;
+  if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true;
+  if (drag.pan){
+    upx = drag.px + dx;                        // 不夹边界：要的就是无限画布的手感
+    upy = drag.py + dy;
+  } else {
+    thx = Math.max(-72, Math.min(72, drag.tx - dy * 0.28));
+    thy = drag.ty + dx * 0.28;
+  }
+  layout();
+}
+function up(){
+  if (drag && drag.moved){ justDragged = true; setTimeout(()=> justDragged = false, 60); }
+  drag = null; stage.classList.remove('dragging');
+}
+stage.addEventListener('mousedown', e=>{
+  e.preventDefault();                       // 双保险：CSS user-select:none 之外的兜底
+  const sel = window.getSelection();
+  if (sel && !sel.isCollapsed) sel.removeAllRanges();   // 清掉上一次残留的选中
+  down(e.clientX, e.clientY, e.shiftKey || spaceDown, spaceDown);
+});
+window.addEventListener('mousemove', e=> move(e.clientX, e.clientY));
+window.addEventListener('mouseup', up);
+stage.addEventListener('touchstart', e=>{ const t=e.touches[0]; down(t.clientX, t.clientY, false, false); }, {passive:true});
+stage.addEventListener('touchmove',  e=>{ const t=e.touches[0]; move(t.clientX, t.clientY); }, {passive:true});
+stage.addEventListener('touchend', up);
+
+/* 滚轮缩放 50%~600%，并以光标为锚点（缩放前后光标下的那块内容不动） */
+const zoomV = document.getElementById('zoomV');
+function setUz(v){
+  uz = Math.max(ZMIN, Math.min(ZMAX, v));
+  zoomV.textContent = Math.round(uz * 100) + '%';
+}
+stage.addEventListener('wheel', e=>{
+  e.preventDefault();
+  const before = uz;
+  setUz(uz * (e.deltaY > 0 ? 1/1.18 : 1.18));
+  if (uz === before) return;
+  const r = stage.getBoundingClientRect();
+  const dx = e.clientX - (r.left + r.width/2) - (panX + upx);
+  const dy = e.clientY - (r.top  + r.height/2) - upy;
+  const k  = uz / before - 1;                 // 缩放增量比例
+  upx -= k * dx;                              // 反向平移，抵消中心缩放
+  upy -= k * dy;
+  layout();
+}, {passive:false});
+
+/* 双击空白处复位缩放与平移 */
+stage.addEventListener('dblclick', e=>{
+  if (e.target.closest('.lbl') || e.target.closest('#demoHud')) return;
+  setUz(1); upx = 0; upy = 0; layout();
+});
+/* 空格一键两用：
+   单击（按下后原样松开）= 切换演示；长按不松 + 拖动 = 无限画布式自由平移。
+   所以切换演示的动作放在 keyup，并且只在「这次空格没被用于拖动」时才触发。
+   焦点在按钮/输入框上时交还给控件，否则空格会既激活控件又触发这里。 */
+let spaceDown = false, spacePanned = false;
+function spaceOwnedByWidget(){
+  const ae = document.activeElement;
+  return !!ae && (ae.tagName === 'BUTTON' || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA');
+}
+window.addEventListener('keydown', e=>{
+  const k = e.key;
+  if (k === 'Escape'){
+    if (demo || demoDone) stopDemo(); else document.getElementById('pClose').click();
+    return;
+  }
+  if (k === ' '){
+    if (spaceOwnedByWidget()) return;
+    e.preventDefault();
+    if (!e.repeat && !spaceDown){ spaceDown = true; spacePanned = false; stage.classList.add('spacepan'); }
+    return;
+  }
+  if (k === 'ArrowLeft')  { thy -= 4; layout(); }
+  if (k === 'ArrowRight') { thy += 4; layout(); }
+  if (k === 'ArrowUp')    { thx = Math.min(72, thx + 3); layout(); }
+  if (k === 'ArrowDown')  { thx = Math.max(-72, thx - 3); layout(); }
+});
+window.addEventListener('keyup', e=>{
+  if (e.key !== ' ') return;
+  const wasPanned = spacePanned;
+  spaceDown = false; spacePanned = false;
+  stage.classList.remove('spacepan');
+  if (wasPanned || spaceOwnedByWidget()) return;   // 这次空格是拿来拖动的，不切换演示
+  toggleDemo();
+});
+/* 失焦时把按住状态清掉，否则切走再回来会误判为「一直按着空格」 */
+window.addEventListener('blur', ()=>{
+  spaceDown = false; spacePanned = false; stage.classList.remove('spacepan');
+});
+window.addEventListener('resize', ()=>{
+  panTarget = selected ? panFor() : 0;
+  fitZoom();                 // 只重算 fit：uz / upx / upy 是用户视角，不因 resize 被清掉
+  layout();
+  kick();
+});
+
+const btnAuto = document.getElementById('btnAuto');
+function syncAuto(){ btnAuto.classList.toggle('act', auto); }
+// 点完按钮就还焦点给 body，避免后续空格/回车被按钮吃掉或重复触发
+document.querySelectorAll('.ctrls button').forEach(b=>{
+  b.addEventListener('click', ()=> b.blur());
+});
+btnAuto.onclick = ()=>{ auto = !auto; if (auto) phase = Math.asin(Math.max(-1,Math.min(1,(thy+14)/20))); syncAuto(); kick(); };
+document.getElementById('btnReset').onclick = ()=>{
+  thx = 21; thy = -14; upx = 0; upy = 0; setUz(1);
+  fitZoom(); auto = true; syncAuto(); layout(); kick();
+};
+document.getElementById('btnIso').onclick   = ()=>{ thx=21; thy=-14; auto=false; syncAuto(); layout(); };
+document.getElementById('btnLow').onclick   = ()=>{ thx=8;  thy=-36; auto=false; syncAuto(); layout(); };
+document.getElementById('btnTop').onclick   = ()=>{ thx=48; thy=-14; auto=false; syncAuto(); layout(); };
+
+/* ---------- 渲染循环：只在「真的需要动」时才跑 ----------
+   常驻 rAF 会让浏览器一直保持 60fps 的合成循环，即使画面完全静止也在耗 CPU/GPU。
+   所以改成按需启动：静止（无自动旋转、无平移缓动、无演示）时直接停掉，
+   任何会改变画面的操作再把它叫醒（kick）。 */
+let rafId = 0, running = false, last = 0;
+function needsLoop(){ return auto || demo || Math.abs(panX - panTarget) > 0.4; }
+function tick(ts){
+  const dt = Math.min(48, ts - last || 16);
+  last = ts;
+  let dirty = false;
+  if (auto && !drag){ phase += 0.0042 * dt / 16.7; thy = -14 + 20 * Math.sin(phase); dirty = true; }
+  if (demo){
+    const p = (performance.now() - demoStart) / DEMO_DUR;
+    dBar.style.width = Math.min(100, Math.max(0, p) * 100).toFixed(2) + '%';
+    advanceArrow(dt);                     // 跑马灯光点沿弯曲箭头跑动
+  }
+  if (Math.abs(panX - panTarget) > 0.4){ panX += (panTarget - panX) * 0.20; dirty = true; }
+  else if (panX !== panTarget){ panX = panTarget; dirty = true; }
+  if (dirty) layout();
+  if (needsLoop() && !document.hidden) rafId = requestAnimationFrame(tick);
+  else running = false;
+}
+function kick(){ if (!running && !document.hidden){ running = true; last = 0; rafId = requestAnimationFrame(tick); } }
+document.addEventListener('visibilitychange', ()=>{ if (document.hidden) running = false; else kick(); });
+window.addEventListener('resize', measureView);
+
+syncAuto();
+fitZoom();
+layout();
+kick();
+</script>
+</body>
+</html>

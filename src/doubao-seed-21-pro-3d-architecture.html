@@ -1,0 +1,1416 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Doubao-Seed-2.1-pro 技术架构 · 3D 教学图（官方公开信息版）</title>
+<style>
+  :root{
+    --bg:#000000; --tx:#F2F4F7; --tx2:#8A93A3; --tx3:#5B6472;
+    --line:rgba(255,255,255,.10); --line2:rgba(255,255,255,.055);
+    --red:#EF4444;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Helvetica Neue",Arial,sans-serif;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%;margin:0}
+  body{background:var(--bg);color:var(--tx);font-family:var(--sans);
+       display:flex;flex-direction:column;overflow:hidden;-webkit-font-smoothing:antialiased;
+       /* 整页禁止文字选择：拖动是用来转视角/平移的，扫过标注会把文字高亮成一片蓝，
+          既是视觉污染也会让人以为页面选中了什么东西。只有面板正文允许复制。 */
+       -webkit-user-select:none;-moz-user-select:none;user-select:none}
+  /* 需要复制的内容例外：详情面板正文 */
+  .p-body{-webkit-user-select:text;-moz-user-select:text;user-select:text}
+  /* 拖动时不要触发原生拖拽（文字/图片被拖走的残影） */
+  #stage,#labels,#demoHud,header,footer{-webkit-user-drag:none}
+
+  header{flex:0 0 auto;padding:13px 24px 10px;border-bottom:1px solid var(--line2);
+         display:flex;align-items:flex-start;gap:24px}
+  .h-left{flex:0 0 auto;max-width:56%}
+  h1{margin:0;font-size:18px;font-weight:650;letter-spacing:.2px}
+  h1 .v{color:var(--red)}
+  .sub{margin-top:5px;font-size:11px;color:var(--tx2);line-height:1.55}
+  .sub code{font-family:var(--mono);font-size:10px;color:#C9D1DC;background:rgba(255,255,255,.05);padding:1px 5px;border-radius:3px}
+  .howto{margin-top:6px;font-size:10.5px;color:var(--tx3);line-height:1.6}
+  .howto b{color:#BFC8D4;font-weight:500}
+  .howto i{font-style:normal;color:#3F4756;margin:0 5px}
+  .legend{flex:1 1 auto;display:flex;flex-wrap:wrap;gap:5px 13px;justify-content:flex-end;padding-top:2px}
+  .lg{display:flex;align-items:center;gap:6px;font-size:10.5px;color:var(--tx2);white-space:nowrap}
+  .lg i{width:8px;height:8px;border-radius:2px;display:block;flex:0 0 auto}
+
+  main{flex:1 1 auto;position:relative;min-height:0;overflow:hidden}
+  #stage{position:absolute;inset:0;overflow:hidden;cursor:grab;
+         perspective:1400px;perspective-origin:50% 50%;
+         background:radial-gradient(1200px 680px at 48% 44%,rgba(72,92,132,.13),transparent 70%)}
+  #stage.dragging{cursor:grabbing}
+  #stage.spacepan{cursor:grab}
+  #stage.spacepan.dragging{cursor:grabbing}
+  #world{position:absolute;left:50%;top:50%;width:0;height:0;transform-style:preserve-3d}
+  .box{position:absolute;left:0;top:0;width:0;height:0;transform-style:preserve-3d;
+       transition:transform .22s cubic-bezier(.2,.9,.3,1)}
+  .face{position:absolute;left:0;top:0;border:1px solid rgba(255,255,255,.11)}
+  .f-front{box-shadow:inset 0 1px 0 rgba(255,255,255,.26), inset 0 0 0 1px rgba(255,255,255,.05)}
+  .f-top{box-shadow:inset 0 0 0 1px rgba(255,255,255,.10)}
+  .f-right,.f-left{box-shadow:inset 0 0 0 1px rgba(255,255,255,.05)}
+  .hit{cursor:pointer}
+  .fw{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+      font-family:var(--mono);font-size:9.5px;letter-spacing:.6px;font-weight:600;
+      pointer-events:none;white-space:nowrap}
+  @keyframes beadflow{0%,100%{opacity:.22}50%{opacity:1}}
+  .bead{animation:beadflow 2.6s linear infinite}
+  /* 演示用的 3D 箭头 + 跑马灯：光点沿箭杆移动（位置由 tick 逐帧写入，仅演示期间） */
+  .abead{display:none;pointer-events:none}
+  #world.demo .abead{display:block}
+  /* 模块内部结构：放大到 150% 以上、且这一块被选中时才「打开」
+     （见脚本里的 applyOpen）。选中态用 .open，薄板可见性用 .vis。
+     外壳面文字与内部结构同时出现会打架，所以打开时隐藏面文字。 */
+  .box.plate{display:none}          /* display:none 才是真的不参与渲染；visibility:hidden 仍会被合成器处理 */
+  .box.plate.vis{display:block}
+  .box.open > .f-front .fw{visibility:hidden}
+
+  /* 演示 HUD */
+  #demoHud{position:absolute;left:50%;top:14px;transform:translate(-50%,-14px);
+           display:flex;align-items:center;gap:12px;padding:9px 16px 10px;
+           background:linear-gradient(180deg,rgba(14,18,24,.94),rgba(9,11,15,.94));
+           border:1px solid rgba(255,255,255,.14);border-radius:6px;
+           box-shadow:0 10px 34px rgba(0,0,0,.6);
+           opacity:0;pointer-events:none;transition:opacity .28s,transform .28s;z-index:30;
+           max-width:min(760px,92vw)}
+  #demoHud.on{opacity:1;transform:translate(-50%,0);pointer-events:auto}
+  .d-live{width:7px;height:7px;border-radius:50%;background:var(--red);flex:0 0 auto;
+          box-shadow:0 0 10px var(--red);animation:dblink 1.5s ease-in-out infinite}
+  #demoHud.done .d-live{background:#22C55E;box-shadow:0 0 10px #22C55E;animation:none}
+  @keyframes dblink{0%,100%{opacity:1}50%{opacity:.25}}
+  .d-t{font-family:var(--mono);font-size:9px;letter-spacing:1.6px;color:var(--tx3);flex:0 0 auto}
+  .d-step{font-family:var(--mono);font-size:11.5px;color:#fff;flex:0 0 auto;letter-spacing:.5px}
+  .d-name{font-size:12.5px;color:#D9DFE8;white-space:nowrap;overflow:hidden;
+          text-overflow:ellipsis;flex:1 1 auto;min-width:0}
+  .d-bar{position:absolute;left:0;right:0;bottom:0;height:2px;background:rgba(255,255,255,.08);
+         border-radius:0 0 6px 6px;overflow:hidden}
+  .d-bar i{display:block;height:100%;width:0;background:var(--red)}
+  #demoHud.done .d-bar i{background:#22C55E}
+
+  #wires{position:absolute;inset:0;pointer-events:none;overflow:visible}
+  #labels{position:absolute;inset:0;pointer-events:none;overflow:hidden;--ls:1}
+  .lbl{position:absolute;pointer-events:auto;cursor:pointer;font-size:calc(11px * var(--ls));
+       line-height:1.3;white-space:nowrap;color:#B9C2D0;transition:color .12s,opacity .25s}
+  .lbl b{font-weight:500}
+  .lbl .no{font-family:var(--mono);font-size:calc(8.5px * var(--ls));color:var(--tx3);
+           display:inline-block;min-width:calc(15px * var(--ls))}
+  .lbl span.en{font-family:var(--mono);font-size:calc(8.5px * var(--ls));color:var(--tx3);margin-left:5px}
+  .lbl:hover,.lbl.on{color:#fff}
+  .lbl.on b{font-weight:650}
+  .lbl.on .no,.lbl.on span.en{color:#DDE3EB}
+
+  #panel{position:absolute;top:0;right:0;bottom:0;width:396px;max-width:92vw;
+         background:linear-gradient(180deg,#0A0C10,#06070A);
+         border-left:1px solid var(--line);transform:translateX(102%);
+         transition:transform .34s cubic-bezier(.22,.9,.28,1);display:flex;flex-direction:column;z-index:20}
+  #panel.open{transform:none}
+  .p-head{padding:20px 22px 16px;border-bottom:1px solid var(--line2);position:relative}
+  .p-dot{position:absolute;left:0;top:20px;width:3px;height:36px;border-radius:0 3px 3px 0}
+  .p-no{font-family:var(--mono);font-size:9.5px;letter-spacing:2px;color:var(--tx3)}
+  .p-name{font-size:17px;font-weight:650;margin:7px 0 0;line-height:1.35}
+  .p-en{font-family:var(--mono);font-size:10px;color:var(--tx2);margin-top:7px;line-height:1.5}
+  .p-close{position:absolute;right:16px;top:16px;width:26px;height:26px;border-radius:5px;
+           border:1px solid var(--line);background:transparent;color:var(--tx2);cursor:pointer;
+           font-size:13px;line-height:1;display:flex;align-items:center;justify-content:center}
+  .p-close:hover{color:#fff;border-color:rgba(255,255,255,.28)}
+  .p-body{padding:18px 22px 34px;overflow-y:auto;flex:1 1 auto}
+  .p-body::-webkit-scrollbar{width:6px}
+  .p-body::-webkit-scrollbar-thumb{background:rgba(255,255,255,.13);border-radius:3px}
+  .sec{margin-bottom:19px}
+  .sec h4{margin:0 0 9px;font-size:9.5px;font-weight:600;letter-spacing:1.6px;color:var(--tx3);
+          text-transform:uppercase;font-family:var(--mono)}
+  .sec p{margin:0;font-size:12.6px;line-height:1.85;color:#D4DAE3}
+  .sec ul{margin:0;padding:0;list-style:none}
+  .sec li{position:relative;padding-left:15px;margin-bottom:8px;font-size:12.6px;line-height:1.82;color:#D4DAE3}
+  .sec li:before{content:"";position:absolute;left:0;top:9px;width:5px;height:1px;background:var(--tx3)}
+  .sec li:last-child{margin-bottom:0}
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{font-family:var(--mono);font-size:10.5px;padding:4px 8px;border-radius:3px;
+        background:rgba(255,255,255,.055);border:1px solid var(--line2);color:#E2E7EE}
+  .cmp{font-size:12.4px;line-height:1.75;color:#C6CEDA}
+  /* 大白话讲解：与「内部原理」并列，视觉上明确标为「通俗版」 */
+  .sec.plain{background:linear-gradient(90deg,rgba(255,255,255,.065),rgba(255,255,255,.018));
+             border-left:2px solid rgba(255,255,255,.36);border-radius:0 5px 5px 0;
+             padding:12px 14px 13px}
+  .sec.plain h4{color:#EDF1F6;letter-spacing:1.4px}
+  .sec.plain h4 em{font-style:normal;font-family:var(--sans);font-size:9px;letter-spacing:0;
+                   color:#8A93A3;margin-left:7px;border:1px solid var(--line);
+                   padding:1px 5px;border-radius:3px;vertical-align:1px}
+  .sec.plain p{margin:0;font-size:13px;line-height:1.92;color:#E3E9F0}
+  .owner{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--tx2);
+         padding:7px 10px;border:1px solid var(--line2);border-radius:4px;background:rgba(255,255,255,.03);
+         cursor:pointer}
+  .owner:hover{color:#fff;border-color:rgba(255,255,255,.25)}
+  .owner i{width:6px;height:6px;border-radius:50%;display:block;flex:0 0 auto}
+  .iso{display:block;width:100%;height:auto;margin:2px 0 0}
+  .iso text{font-family:var(--sans)}
+  .iso .iso-line{stroke:rgba(255,255,255,.22);stroke-width:1}
+  .iso .ty{fill:#E4E9F0;font-size:12px;font-weight:600}
+  .iso .td{fill:#7E8797;font-size:9.5px}
+  .iso-cap{margin-top:6px;font-size:10px;color:var(--tx3);font-family:var(--mono);letter-spacing:.2px}
+
+  footer{flex:0 0 auto;border-top:1px solid var(--line2);padding:9px 24px 11px;
+         display:flex;align-items:center;gap:22px;flex-wrap:wrap}
+  .metrics{display:flex;gap:18px;flex-wrap:wrap}
+  .m{display:flex;flex-direction:column;gap:1px}
+  .m u{font-family:var(--mono);font-size:13.5px;font-weight:600;color:#fff;text-decoration:none;letter-spacing:.3px}
+  .m .e{font-family:var(--mono);font-size:8.5px;color:#4E5665;letter-spacing:.4px}
+  .m .z{font-size:10px;color:var(--tx2);letter-spacing:.2px}
+  .m.acc u{color:var(--red)}
+  .kv{flex:0 0 auto;display:flex;flex-direction:column;gap:4px}
+  .kv-t{font-size:9px;font-family:var(--mono);letter-spacing:1px;color:var(--tx3)}
+  .kv-row{display:flex;align-items:center;gap:8px;font-size:9px;font-family:var(--mono);color:var(--tx2)}
+  .kv-row em{font-style:normal;width:72px;text-align:right;color:var(--tx3)}
+  .kv-bar{width:96px;height:5px;background:rgba(255,255,255,.06);border-radius:3px;overflow:hidden}
+  .kv-bar i{display:block;height:100%;border-radius:3px}
+  .kv-row b{font-weight:500;width:74px;color:var(--tx2)}
+  .kv-row.now em,.kv-row.now b{color:#fff}
+  .ctrls{margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  button.c{font-family:var(--sans);font-size:11px;color:var(--tx2);cursor:pointer;
+           background:transparent;border:1px solid var(--line);border-radius:4px;padding:5px 10px;transition:.14s}
+  button.c:hover{color:#fff;border-color:rgba(255,255,255,.3)}
+  button.c.act{color:#fff;border-color:rgba(255,255,255,.42);background:rgba(255,255,255,.07)}
+  button.c.go{color:#fff;border-color:rgba(239,68,68,.55);background:rgba(239,68,68,.13)}
+  button.c.go:hover{border-color:var(--red);background:rgba(239,68,68,.2)}
+  button.c.go.stop{background:rgba(239,68,68,.92);border-color:var(--red);color:#fff}
+  button.c.go.stop:hover{background:var(--red)}
+  .hint{font-size:9.5px;color:var(--tx3);font-family:var(--mono);letter-spacing:.2px}
+  .zoomv{font-size:9.5px;color:var(--tx3);font-family:var(--mono);white-space:nowrap;
+         padding-left:9px;border-left:1px solid var(--line)}
+  .zoomv b{color:#fff;font-weight:600;font-size:10.5px}
+
+  @media (max-width:1460px){ .kv{display:none} }
+  @media (max-width:1250px){ header{flex-direction:column;gap:9px} .h-left{max-width:none}
+    .legend{justify-content:flex-start} }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="h-left">
+    <h1>Doubao<span class="v">-Seed-2.1-pro</span> 技术架构 · 3D 教学图</h1>
+    <div class="sub">
+      左：Original Transformer（2017）· 右：Doubao-Seed-2.1-pro · <b>官方未公开任何架构参数，本图只呈现已确认信息</b><br>
+      <code>256K</code> 上下文 · 输入 文本 / 图片 / 视频 · 输出 仅文本 · 官网 Model Card 评测表 23 项 · 闭源仅 API · 2026-06-23 发布 · 总参 / 激活参 / 层数 / 专家数 / 隐藏维度 / 词表 官方均未公开
+    </div>
+    <div class="howto">
+      读图：所有色块<b>尺寸统一</b>，只有颜色区分模块<i>·</i>
+      <b>灰色块 = 官方未公开，本图不作推测；带「推断」二字的块，是字节官方公开的研究成果，但官方从未确认本模型采用了它们</b><i>·</i>
+      <b>放大到 150% 以上并点选色块，它会「打开」露出内部结构</b>
+    </div>
+  </div>
+  <div class="legend" id="legend"></div>
+</header>
+
+<main>
+  <div id="stage">
+    <div id="world"></div>
+    <svg id="wires"></svg>
+    <div id="labels"></div>
+    <div id="demoHud">
+      <span class="d-live"></span>
+      <span class="d-t">自动演示</span>
+      <span class="d-step" id="dStep">01 / 15</span>
+      <span class="d-name" id="dName"></span>
+      <div class="d-bar"><i id="dBar"></i></div>
+    </div>
+  </div>
+
+  <aside id="panel">
+    <div class="p-head">
+      <div class="p-dot" id="pDot"></div>
+      <div class="p-no" id="pNo">—</div>
+      <div class="p-name" id="pName"></div>
+      <div class="p-en" id="pEn"></div>
+      <button class="p-close" id="pClose">✕</button>
+    </div>
+    <div class="p-body" id="pBody"></div>
+  </aside>
+</main>
+
+<footer>
+  <div class="metrics" id="metrics"></div>
+
+  <div class="kv">
+    <div class="kv-t">Agent Startup Bench（官方 Model Card 口径）</div>
+    <div class="kv-row"><em>Claude Opus 4.7</em><div class="kv-bar"><i style="width:91%;background:#6B7280"></i></div><b>62.3</b></div>
+    <div class="kv-row"><em>GPT-5.5</em><div class="kv-bar"><i style="width:99%;background:#9CA3AF"></i></div><b>68.1</b></div>
+    <div class="kv-row now"><em>Seed2.1 Pro</em><div class="kv-bar"><i style="width:100%;background:#EF4444"></i></div><b>68.8</b></div>
+  </div>
+
+  <div class="ctrls">
+    <span class="hint">拖动旋转 · 空格/Shift+拖动 平移 · 滚轮缩放 · 双击复位 · 空格=演示</span>
+    <span class="zoomv">缩放 <b id="zoomV">100%</b></span>
+    <button class="c go" id="btnDemo">▶ 演示</button>
+    <button class="c" id="btnAuto">自动旋转</button>
+    <button class="c" id="btnReset">重置视角</button>
+    <button class="c" id="btnIso">等距</button>
+    <button class="c" id="btnLow">低角</button>
+    <button class="c" id="btnTop">俯视</button>
+  </div>
+</footer>
+
+<script>
+/* =====================================================================
+   Doubao-Seed-2.1-pro 3D 架构教学图（官方公开信息版 + 推断底座）
+   纯 CSS 3D transform + 自建投影数学，零外部依赖
+   方块尺寸统一 · 纵深 = 层叠维度 · 放大选中后色块可「打开」看内部结构
+   ===================================================================== */
+const stage   = document.getElementById('stage');
+const world   = document.getElementById('world');
+const labelsEl= document.getElementById('labels');
+const wires   = document.getElementById('wires');
+
+const P0 = 2600;                       // 基准透视距离。原来的 1250 是短焦，导致同一列里
+                                       // 靠下的色块比靠上的宽 22%，看起来「宽窄不一」；
+                                       // 2600 把差异压到约 10%，呈平滑透视收敛，仍保留纵深。
+stage.style.perspective = P0 + 'px';   // 必须由 JS 写入，保证与 project() 的 P0 永远一致
+let thx = 21, thy = -14;               // 俯仰 / 偏航（度）
+let fit = 1;                           // 自适应等比缩放（保证整图不被裁切）
+let uz  = 1;                           // 用户缩放倍率（滚轮），上限 6 → 600%
+let upx = 0, upy = 0;                  // 用户平移（空格/Shift + 拖动，双击复位）
+let phase = 0, auto = false;           // 默认静止：常驻旋转会让 CPU/GPU 一直跑满
+let panX = 0, panTarget = 0;           // 详情面板展开时的自动让位
+const ZMIN = 0.5, ZMAX = 6;            // 缩放范围 50% ~ 600%
+
+/* 总放大倍率。关键：缩放 #world 的同时，必须把 perspective 也乘上同一倍率。
+   若只缩放场景而相机距离不变，就等于把相机怼到模型脸上——近处元素贴脸爆炸、
+   远处缩到看不见深度差；两者同比放大得到的才是「纯光学变焦」：构图与透视
+   关系完全不变，只是整张图变大。副产品是投影分母恒为正，任何倍率下都数值安全。 */
+function M(){ return fit * uz; }
+
+/* 视口尺寸缓存：clientWidth/Height 与 getBoundingClientRect 都是布局属性，
+   每帧读会强制浏览器同步重排（我们刚改过样式，缓存必然失效）。
+   project() 每帧被调用几十次，不缓存的话重排成本会翻几十倍。 */
+let viewW = 0, viewH = 0, viewL = 0, viewT = 0;
+function measureView(){
+  const r = stage.getBoundingClientRect();
+  viewW = r.width; viewH = r.height; viewL = r.left; viewT = r.top;
+  // viewBox 必须跟着视口走：SVG 元素是 inset:0，若 viewBox 尺寸与元素不符，
+  // 默认 preserveAspectRatio 会把整层连线按比例缩放、和 3D 图元错位。
+  wires.setAttribute('viewBox', '0 0 ' + viewW + ' ' + viewH);
+}
+
+/* ---------- 投影：与 CSS transform 逐项一致 ---------- */
+function project(x, y, z){
+  const m = M();
+  x *= m; y *= m; z *= m;                    // 与 layout() 的 scale3d 一致
+  const rx = thx*Math.PI/180, ry = thy*Math.PI/180;
+  const X = x, Y = -y, Z = z;                          // CSS 中 y 轴向下
+  const cy_ = Math.cos(ry), sy_ = Math.sin(ry);
+  const x1 =  cy_*X + sy_*Z;
+  const z1 = -sy_*X + cy_*Z;
+  const cx_ = Math.cos(rx), sx_ = Math.sin(rx);
+  const y2 = cx_*Y - sx_*z1;
+  const z2 = sx_*Y + cx_*z1;
+  const Pc = P0 * m;                                   // 透视距离与场景同比缩放
+  const s  = Pc / (Pc - z2);
+  // panX / upx / upy 对应 CSS 的 translateX/translateY，作用在透视之内，
+  // 所以必须跟旋转后的坐标一起乘 s，否则会整体偏移 pan*(1−s) 个像素、压到方块上。
+  return { sx: viewW/2 + (x1 + panX + upx)*s,
+           sy: viewH/2 + (y2 + upy)*s, s: s };
+}
+
+/* ---------- 颜色 ---------- */
+function hexA(h){ h=h.replace('#',''); if(h.length===3) h=h.split('').map(c=>c+c).join('');
+  return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)]; }
+function toRgb(a){ return 'rgb(' + a.map(v=>Math.round(Math.max(0,Math.min(255,v)))).join(',') + ')'; }
+function shade(h,f){ const c=hexA(h); return toRgb(c.map(v=> f>0 ? v+(255-v)*f : v*(1+f))); }
+function shadeA(h,f,a){ const c=hexA(h);
+  const v = c.map(x => Math.round(Math.max(0, Math.min(255, f>0 ? x+(255-x)*f : x*(1+f)))));
+  return 'rgba(' + v[0] + ',' + v[1] + ',' + v[2] + ',' + a + ')'; }
+function lum(h){ const c=hexA(h); return (0.299*c[0]+0.587*c[1]+0.114*c[2])/255; }
+
+/* ---------- 几何 ---------- */
+const NUM = ['①','②','③','④','⑤','⑥','⑦','⑧'];   // 层序编号（内部结构薄板 + 等距图共用）
+const X_R = 158, X_L = -400;
+const BW = 210, BH = 28;
+const DEF_D = 34;   // 统一厚度。曾经用厚度编码「参数量级」（如 MoE 层最厚、量化层最薄），
+                    // 但那是我加的编码、不是架构本身的信息，且会让色块前后错落、看起来不一致。
+                    // 参数量级的信息在面板「关键数据」里仍有，故取消该视觉编码。
+
+const ROW = { r01:-358, r02:-316, r03:-274,
+              r04:-220, r05:-178, r06:-136, r07:-94,
+              r08:-42,
+              r09:34, r10:76, r11:118, r12:160, r13:202, r14:244, r15:286 };
+const LROW = [-170,-130,-90,-50,-10,30,70,110,150];
+
+/* ---------- 立方体（六面，渐变着色 + 受光边高光） ---------- */
+function makeBox(o){
+  const el = document.createElement('div');
+  el.className = 'box' + (o.boxCls ? ' ' + o.boxCls : '');
+  el._base = 'translate3d(' + o.x + 'px,' + (-o.y) + 'px,' + (o.z||0) + 'px)' +
+             (o.rotZ ? ' rotateZ(' + o.rotZ + 'deg)' : '');
+  el.style.transform = el._base;
+
+  const w=o.w, h=o.h, d=o.d, base=o.color;
+  const ink = o.ink || (lum(base) > 0.60 ? '#0B0B0B' : '#FFFFFF');
+  // 光照方向：左上前方 → 顶面最亮、右面次暗、左面最暗
+  const G = (a,b) => 'linear-gradient(' + a + ',' + shade(base,b[0]) + ',' + shade(base,b[1]) + ')';
+  const defs = {
+    front : [w, h, 'translateZ(' + ( d/2) + 'px)',                   G('165deg',[ 0.10,-0.14])],
+    back  : [w, h, 'translateZ(' + (-d/2) + 'px) rotateY(180deg)',   shade(base,-0.62)],
+    right : [d, h, 'translateX(' + ( w/2) + 'px) rotateY(90deg)',    G('180deg',[-0.20,-0.46])],
+    left  : [d, h, 'translateX(' + (-w/2) + 'px) rotateY(-90deg)',   G('180deg',[-0.40,-0.60])],
+    top   : [w, d, 'translateY(' + (-h/2) + 'px) rotateX(90deg)',    G('105deg',[ 0.40, 0.16])],
+    bottom: [w, d, 'translateY(' + ( h/2) + 'px) rotateX(-90deg)',   shade(base,-0.58)]
+  };
+  ['back','left','bottom','top','right','front'].forEach(k=>{
+    if (o.faces && o.faces.indexOf(k) < 0) return;
+    const f = defs[k];
+    const div = document.createElement('div');
+    div.className = 'face f-' + k + (o.hit ? ' hit' : '') + (o.cls ? ' ' + o.cls : '');
+    div.style.width = f[0] + 'px';
+    div.style.height = f[1] + 'px';
+    div.style.marginLeft = (-f[0]/2) + 'px';
+    div.style.marginTop  = (-f[1]/2) + 'px';
+    div.style.background = f[3];
+    div.style.borderColor = o.border || 'rgba(255,255,255,.11)';
+    div.style.transform = f[2];
+    if (k === 'front' && o.face){
+      const tx = document.createElement('div');
+      tx.className = 'fw';
+      tx.style.color = o.faceColor || ink;
+      tx.textContent = o.face;
+      div.appendChild(tx);
+    }
+    el.appendChild(div);
+  });
+  el._front = el.querySelector('.f-front');
+  world.appendChild(el);
+  return el;
+}
+
+/* ---------- 自适应视距 ---------- */
+/* 内容包围盒（视口坐标） */
+function contentBox(){
+  let mnx = 1e9, mxx = -1e9, mny = 1e9, mxy = -1e9, any = false;
+  const acc = el => {
+    const b = el.getBoundingClientRect();
+    if (b.width === 0 && b.height === 0) return;
+    any = true;
+    if (b.left   < mnx) mnx = b.left;
+    if (b.right  > mxx) mxx = b.right;
+    if (b.top    < mny) mny = b.top;
+    if (b.bottom > mxy) mxy = b.bottom;
+  };
+  world.querySelectorAll('.face').forEach(acc);
+  labelsEl.querySelectorAll('.lbl').forEach(acc);
+  return any ? { mnx:mnx, mxx:mxx, mny:mny, mxy:mxy } : null;
+}
+/* 以 (cX,cY) 为中心等比缩放时，把包围盒收进 [tl,tr]×[tt,tb] 所需的比例。
+   注意不能拿「总宽高」比——包围盒中心未必落在 cX/cY 上，必须按各自到中心的距离解。 */
+function needScale(b, cX, cY, tl, tr, tt, tb){
+  let f = 1;
+  const EPS = 0.5;
+  if (b.mxx - cX >  EPS) f = Math.min(f, (tr - cX) / (b.mxx - cX));
+  if (b.mnx - cX < -EPS) f = Math.min(f, (tl - cX) / (b.mnx - cX));
+  if (b.mxy - cY >  EPS) f = Math.min(f, (tb - cY) / (b.mxy - cY));
+  if (b.mny - cY < -EPS) f = Math.min(f, (tt - cY) / (b.mny - cY));
+  return Math.max(0, f);
+}
+/* 详情面板打开时会吃掉右侧一块宽度，可用区要按「舞台宽度 − 面板宽度」算。
+   panX 与 scale 都作用在透视之内，panX = −面板宽/2 恰好把内容中心对到可用区中心，
+   此时缩放中心与目标区中心重合，拟合结果是对称最优的。 */
+function panelWidth(){ return (panel && panel.classList.contains('open')) ? panel.offsetWidth : 0; }
+function panFor(){ return -panelWidth() / 2; }
+
+/* 只调 fit（自适应等比缩放）与 panX（面板让位），不动 uz / upx / upy —— 那是用户的视角。
+   因为 scene 与 perspective 同比缩放是「纯光学变焦」，所以缩放后包围盒与 fit 严格成正比，
+   一次解就准；但标签防重叠的间距是固定屏幕像素、不随缩放变化，仍然必须迭代。 */
+function fitZoom(){
+  measureView();
+  const W = viewW, H = viewH;
+  if (!W || !H) return;
+  const r = {left:viewL, top:viewT, right:viewL + W, bottom:viewT + H};
+  const pw = panelWidth(), PAD = 14;
+  const tl = r.left + PAD,  tr = r.right - pw - PAD;
+  const tt = r.top + PAD,   tb = r.bottom - PAD;
+  const cX = r.left + W/2 - pw/2;              // == 目标区中心 == panX=panFor() 时的缩放中心
+  const cY = r.top + H/2;
+  const px = panX, puz = uz, pux = upx, puy = upy;
+  panX = panFor(); uz = 1; upx = 0; upy = 0;   // 自动拟合永远按「未缩放、未平移」的基准画面算
+  fit = 1;                        // 必须从 1 重新拟合：fit 只减不增，否则面板开一次后图会永久变小
+  for (let it = 0; it < 7; it++){
+    layout();
+    const b = contentBox();
+    if (!b) break;
+    const f = needScale(b, cX, cY, tl, tr, tt, tb) * 0.995;
+    if (f > 0.994) break;
+    fit = Math.max(0.30, fit * f);
+  }
+  panX = px; uz = puz; upx = pux; upy = puy;
+  layout();
+}
+
+/* =====================================================================
+   数据：右侧 —— Doubao-Seed-2.1-pro（字节跳动 / 火山引擎）
+   口径分档（每一处都逐条标注）：
+     ① 官方一手：官方 Model Card（官网 seed.bytedance.com/seed2_1 的评测表 +
+        73 页 Model Card PDF）、官方发布博客（research.doubao.com，2026-06-23）、
+        火山方舟模型页与官方文档（模型列表 / 模型支持的参数列表 / 深度思考）
+     ② 官方发布口径（经媒体转述）：如 COMET 的「训练硬件成本降 40%」
+     ③ 第三方转述：如「稀疏 MoE 架构」——官方模型页与博客均未写架构类型
+     ④ 字节官方公开研究（与本模型的关联为本图推断）：UltraMem、COMET
+   官方从未公开：总参数 / 激活参数 / 层数 / 专家数 / 隐藏维度 / 词表 / 注意力机制。
+   ===================================================================== */
+const RIGHT = [
+ {no:'01', y:ROW.r01, x:X_R, name:'输入：文本 / 图片 / 视频', en:'官方模型页确认', face:'INPUT', color:'#3B82F6', side:1,
+  inner:[['文本输入','官方确认'],['图片输入','官方确认'],['视频输入','官方确认'],['输出仅文本','不产出图像']],
+  d:{what:'官方模型页确认的输入形态：文本、图片、视频三类；输出形态只有文本。这是火山方舟模型页明确列出的规格。',
+     how:['火山方舟模型页「输入 | 输出类型」一栏写的是：输入「文本、图片、视频」，输出「文本」。',
+          '模型页的任务类型一栏写「文本生成、图片内容理解」——图片是理解对象，不是生成对象。',
+          '官方发布博客补充描述：模型能处理文档、PDF、图表、空间结构等复杂视觉信息，并围绕任务目标整理与交付。'],
+     data:['文本 / 图片 / 视频输入','输出仅文本','任务类型：文本生成 · 图片内容理解'],
+     cmp:'2017 版只有文本子词输入，没有图像与视频通路。'}},
+
+ {no:'02', y:ROW.r02, x:X_R, name:'图像与视频理解能力', en:'能力官方确认 · 编码器规格未公开', face:'VISION', color:'#6366F1', side:1,
+  inner:[['视觉理解','官方确认能力强'],['空间理解','ERQA 官方最佳成绩'],['视频与运动','TOMATO / TVBench 高分'],['视觉编码器','结构与参数量未公开']],
+  d:{what:'官方确认该系列具备图像与视频理解能力，并在多项视觉、空间、视频基准上取得高分；但视觉编码器的结构、层数与参数量均未公开。',
+     how:['官方 Model Card 列出：WorldVQA 视觉知识 53.0、BabyVision 感知 73.7、ERQA 空间推理 72.0、CharXiv-RQ 信息图表 85.4、ZEROBench 视觉拼图 18.0。其中 CharXiv-RQ 与 ZEROBench 官方标注为 w. Tool（使用工具），且各给了两个数字；未标 w. Tool 的项为无工具成绩。',
+          '官方发布博客称模型在 CharXiv-RQ、MeasureBench 上取得最高分，在 ERQA 上取得最佳成绩，说明空间理解能力进一步增强。',
+          '视频侧：VideoMME 89.2、TOMATO 运动与感知 79.5、Minerva 视频推理 70.7、OVOBench 流式理解 80.7（官方博客写作 OVBench、Model Card 表格写作 OVOBench，是同一基准）、VideoSimpleQA 76.4。这几项官方未标 w. Tool。',
+          '⚠ 这些是能力与评测层面的数字。视觉编码器怎么搭、有多少参数，官方没有任何公开信息，本图不推测。'],
+     data:['图像 / 视频理解：官方确认','多项视觉基准高分','编码器规格：未公开'],
+     cmp:'2017 版没有视觉通路。'}},
+
+ {no:'03', y:ROW.r03, x:X_R, name:'上下文窗口 256K', en:'输入 / 输出 / 思考均为 256K', face:'CONTEXT', color:'#14B8A6', side:1,
+  inner:[['上下文窗口 256K','官方模型页确认'],['最大输入 256K','官方模型页'],['最大输出 256K','上限 256K，默认 4K'],['最大思考内容 256K','官方模型页']],
+  d:{what:'官方模型页给出的长度规格：上下文窗口、最大输入、最大输出、最大思考内容四项都是 256K token。注意官方《模型列表》里写的是「最大回答（**默认 4K**）：256K」——256K 是上限，不是默认输出长度。',
+     how:['把「最大输出」也放到 256K 是一个少见的选择——官方模型页四种长度上限用的是同一个数字。',
+          '官方发布博客把长上下文与「帮助 Agent 在更完整的上下文中稳定推进复杂任务」绑定在一起，并在 MMLongBench-128K 长上下文基准上给出 78.3。',
+          '同系列还有一个 Seed-Evolving 版本，火山引擎模型广场标注其上下文窗口为 1024k，与本模型不同，不要混用。'],
+     data:['上下文窗口 256K','最大输入 / 输出 / 思考均 256K','Seed-Evolving 为 1024k（另一版本）'],
+     cmp:'2017 版受限于平方级注意力，长序列成本不可承受。'}},
+
+ {no:'04', y:ROW.r04, x:X_R, name:'架构细节：官方未公开', en:'层数 · 专家数 · 隐藏维度 · 词表', face:'UNDISCLOSED', color:'#64748B', side:1,
+  inner:[['总参数 / 激活参数','官方均未公开'],['层数 / 专家数','官方均未公开'],['隐藏维度 / 词表','官方均未公开'],['注意力机制','官方未公开'],['视觉编码器','官方未公开']],
+  d:{what:'这一块代表官方没有公开的部分。Model Card、发布博客、火山方舟模型页三处官方材料里，都没有任何架构参数。',
+     how:['可以对照的是行业惯例：多数厂商会在模型卡或技术报告里写明架构参数（层数、专家数、隐藏维度、词表），而这一代的官方材料里这些位置全部是空的。',
+          '官方把公开重心放在服务规格（长度、限流、定价、输入输出类型）与评测成绩上，没有走「发布架构规格」这条路。',
+          '⚠ 网上流传的「200B 总参 / 20B 激活」是**豆包 1.5 代**的官方口径（2025-04 官方发布会披露的 1.5-thinking-pro），**不是 Seed2.1 的**；另有称「1.2 万亿」的说法，出自**含火山引擎「文章」频道在内的多篇疑似 AI 生成内容、并非官方文档**，无可信出处。这两条本图都不采用。'],
+     data:['架构参数：官方全部未公开','网上流传的 200B/20B 属上一代口径','1.2 万亿说法无可靠出处'],
+     cmp:'2017 版的每个结构数字在论文里都有明确记载，属于可查的文档规格。'}},
+
+ {no:'05', y:ROW.r05, x:X_R, name:'稀疏 MoE 架构（转述口径）', en:'第三方转述 · 官方文档未载', face:'MoE', color:'#F59E0B', side:1,
+  inner:[['稀疏 MoE','由第三方转述指出'],['官方模型页未写架构类型','三处官方材料均未提及'],['专家数量','未公开'],['激活专家数与路由策略','未公开']],
+  d:{what:'业界普遍把这一系列归入稀疏混合专家（MoE）架构。但要强调：这一条出自第三方整理与发布会报道，**官方的 Model Card、发布博客与模型页都没有写架构类型**。',
+     how:['连「是 MoE 还是稠密」这一层，官方材料都没有表态——这与其他各家在模型卡里写清架构的做法不同。',
+          '字节在更早的豆包版本上曾公开「稀疏 MoE、以更小激活参数撬动更大参数量」的技术路线，但那是上一代的表述。',
+          '所以本图把它放在这里，但标注为「转述口径」，而不是官方规格；专家数、激活数、路由策略一律不填。'],
+     data:['稀疏 MoE：第三方转述口径','官方文档：未载架构类型','专家数与路由：未公开'],
+     cmp:'2017 版是稠密 FFN：每个 token 都要走全部参数。'}},
+
+ {no:'06', y:ROW.r06, x:X_R, name:'同厂公开研究①：UltraMem', en:'字节官方研究 · 与本模型的关联为推断', face:'ULTRAMEM · 推断', color:'#8B5CF6', side:1,
+  inner:[['超稀疏记忆架构','字节豆包团队公开研究'],['arXiv 2411.12364','ICLR 2025 接收'],['推理速度较 MoE 提升 2–6 倍','官方博客口径'],['推理成本最高降 83%','官方博客口径'],['⚠ 本模型是否采用','官方未确认']],
+  d:{what:'字节豆包团队公开提出的一种超稀疏模型架构，用来解决 MoE 推理时的高额访存问题。**本图把它列在这里，但没有任何证据表明 Seed2.1 采用了它。**',
+     how:['官方博客口径：在参数与激活条件相同的情况下，UltraMem 的效果超过 MoE，推理速度提升 2–6 倍；在常见 batch size 下，访存成本几乎与同计算量的稠密模型相当。⚠ 这两个数字出自字节官方研究博客的标题与正文，**论文摘要只写 “state-of-the-art inference speed”，并未给出 2–6 倍与 83%**，两者不宜混标。',
+          '论文已被 ICLR 2025 接收（arXiv 2411.12364），发表于 2024 年 11 月 —— **早于 Seed2.1 一年多**。',
+          '⚠ 时间顺序本身就说明问题：一个更早发表的架构研究，不能被当作后来某个模型的规格。官方从未把 UltraMem 与 Seed2.1 关联起来。',
+          '本图放它的理由只有一个：它是理解「字节为什么反复强调推理成本」的背景，而不是这个模型的架构。'],
+     data:['官方研究（ICLR 2025）','与 Seed2.1 的关联：本图推断','官方未确认采用'],
+     cmp:'2017 版不存在「参数与计算解耦」这个概念。'}},
+
+ {no:'07', y:ROW.r07, x:X_R, name:'同厂公开研究②：COMET', en:'字节官方开源 · 与本模型的关联为推断', face:'COMET · 推断', color:'#0EA5E9', side:1,
+  inner:[['MoE 通信优化系统','字节官方开源'],['单 MoE 层提速 1.96 倍','官方口径'],['端到端效率 1.71 倍','官方口径'],['训练硬件成本降 40%','官方发布口径（媒体转述）'],['⚠ 本模型是否采用','官方未确认']],
+  d:{what:'字节公开的 MoE 计算—通信细粒度重叠系统：把通信与计算放进同一个 GPU 内核里执行，按动态负载自适应分配线程块。同样是**与本模型无关联证据**的同厂公开研究。',
+     how:['论文口径（arXiv 2502.19811）：单 MoE 层执行速度提升 1.96 倍、端到端平均 1.71 倍，并节省数百万 GPU 小时；而「训练硬件成本削减 40%」出自字节官方发布口径（经媒体转述），论文摘要未直接给 40%。该工作入选 MLSys 2025，开源地址为 GitHub 上的 bytedance/flux。',
+          '它解决的问题很具体：传统 MoE 在分布式环境下，层间通信耗时可占整体执行时间的很大一部分，形成流水线气泡。',
+          '⚠ 与 UltraMem 同理——这是字节公开的工程能力，不是 Seed2.1 的规格。官方发布博客里没有出现 COMET 一词。',
+          '本图只把它作为「同厂公开研究」呈现，并明确标注推断属性。'],
+     data:['官方开源系统','与 Seed2.1 的关联：本图推断','官方未确认采用'],
+     cmp:'2017 版是单机单卡时代的结构，不涉及分布式通信优化。'}},
+
+ {no:'08', y:ROW.r08, x:X_R, name:'思考模式与档位', en:'thinking.type + reasoning_effort', face:'THINKING', color:'#7C3AED', side:1,
+  inner:[['thinking.type','enabled（默认）/ disabled'],['reasoning_effort','minimal / low / medium / high'],['默认档位','high'],['minimal 的含义','即不思考']],
+  d:{what:'官方在能力项里列出「深度思考」，并给出两个控制参数：thinking.type 与 reasoning_effort。取值在官方文档里可以查到，而且恰好就是四档。',
+     how:['火山方舟官方文档《模型支持的参数列表》逐模型列出取值：本模型（doubao-seed-2-1-pro-260628）的 thinking 支持 enabled（默认）/ disabled，reasoning_effort 支持 minimal / low / medium / high，**默认 high**。',
+          '也就是说——流传的「四级档位」说法与官方一致，可以直接采用；其中 minimal 相当于不思考。',
+          '⚠ 这里有个容易踩的坑：参数名在模型详情页可见，但**取值要去官方文档《模型支持的参数列表》里查**，这是两处不同的官方材料，只看模型页会误以为官方没公布。',
+          '另有官方《深度思考》文档给出全量档位语义（none / minimal / low / medium / high / xhigh / max），各模型按映射规则接受其中一部分；本模型实际接受的是上面四档。'],
+     data:['thinking：enabled（默认）/ disabled','reasoning_effort：minimal / low / medium / high','默认 high；minimal 即不思考'],
+     cmp:'2017 版只有一条固定的前向路径，没有可切换的思考深度。'}},
+
+ {no:'09', y:ROW.r09, x:X_R, name:'Seed2.1 Deep Think', en:'发布会介绍 · 推理 → 验证 → 修正 → 选择', face:'DEEP THINK', color:'#EF4444', side:1,
+  inner:[['专为前沿研究与高级工程','Model Card 专章'],['四步自动循环','推理→验证→修正→选择'],['可调用网络搜索','检索领域文献'],['可调用代码沙盒','测试中间假设']],
+  d:{what:'官方定义的一种推理时配置：面对前沿研究与高级工程中的复杂推理任务，模型执行「推理 → 验证 → 修正 → 选择」的自动化循环。',
+     how:['循环期间模型可以调用网络搜索检索领域文献，并用沙盒执行代码来测试中间假设——也就是说，验证这一步不是纯内部推理，而是真的去执行。',
+          '来源等级：**官方一手**。官方 Model Card（73 页 PDF）有专门一节定义 Deep Think，原文即「执行 reason → verify → revise → select 的自动化循环」。',
+          '同一节还给出一张前沿推理基准表：IMO 2025 为 81.0、IMOProof-Adv 为 83.8、IPhO 2025 为 89.0、FrontierScience-Research 为 40.7。',
+          '它和上一个节点的「思考档位」是两件事：档位是接口层面的强度旋钮，Deep Think 是一套带工具验证的循环流程。',
+          '官方发布博客在总结里写道：在最具挑战性的开放任务以及前沿研究问题求解上，模型能力仍有提升空间——这句自述值得与上面的宣传口径对照着看。'],
+     data:['四步循环：推理 / 验证 / 修正 / 选择','可调网络搜索与代码沙盒','来源：官方 Model Card 专章'],
+     cmp:'2017 版不存在推理时的自动化验证循环。'}},
+
+ {no:'10', y:ROW.r10, x:X_R, name:'通用 Agent 执行', en:'跨工具 / 跨环境任务交付', face:'AGENT', color:'#EC4899', side:1,
+  inner:[['项目规划','官方能力项'],['文件处理','官方能力项'],['多步骤工具调用','官方能力项'],['跨环境稳定交付','官方能力项']],
+  d:{what:'官方把「通用 Agent 能力」列为本次升级的第一个维度：能跨工具、跨环境稳定完成项目规划、文件处理、多步骤工具调用，并产出可落地的结果。',
+     how:['官方 Model Card：Agent Startup Bench 68.8、Workspace Bench 53.0、xDailyBench 61.0；官方发布博客称 Seed2.1 Pro 在 GDPval 上获得最高分。',
+          '官方发布博客强调 ALE（Agents Last Exam）这一个基准的时效性价值：该评测发布不久，各模型短期内难以定向优化，因此更能反映面对新任务场景的泛化能力。',
+          '官方还描述了「面向个人生活的复杂咨询」场景：用户同时给出背景、历史记录、行业报告，内容分散在文档 / PDF / 图片中，需要综合推理与判断。'],
+     data:['GDPval：官方称最高分','Agent Startup Bench 68.8','ALE：官方称第一梯队'],
+     cmp:'2017 版没有任何工具调用或任务规划的概念。'}},
+
+ {no:'11', y:ROW.r11, x:X_R, name:'代码工程端到端交付', en:'需求 → 实现 → 修复 → 验证', face:'CODING', color:'#22D3EE', side:1,
+  inner:[['需求理解与功能实现','官方能力项'],['bug 修复','官方能力项'],['运行环境搭建','官方能力项'],['结果验证','官方能力项'],['仓库级多文件修改','官方能力项']],
+  d:{what:'官方把「代码工程端到端交付」列为第二个维度：在真实企业级开发任务中完成需求理解、功能实现、bug 修复、运行环境搭建与结果验证，形成稳定交付。',
+     how:['官方 Model Card：Terminal Bench 2.1 为 71.0、NL2Repo-Bench 为 47.0、ProgramBench 为 0/1/5 的 0.3。',
+          '官方发布博客披露了一个众测口径：邀请开发者基于真实代码仓库提交任务、对匿名模型输出做比较，**Seed2.1 Pro 相对 Claude Opus 4.6 取得 59.1% 胜率**。',
+          '前端场景另有人类偏好评测：Code Arena: Frontend 榜单 1539 分、排名第 8，7 个前端子类别中 5 个进入前 10。⚠ 官方两处一手材料口径不同——发布博客写的是「Seed2.1 **Preview 版本**」参与，Model Card 则把该成绩记在 **Seed2.1-Pro** 名下（图题亦标 Pro）。本图按博客口径标注 Preview，并保留这处分歧。',
+          '除通用代码外，官方还提到模型在 SciCode（科研代码）与 FrontierScience-Olympiad（高难科学问题）等基准中表现良好，并把多语言能力纳入提升项（内部基准 MSQA 覆盖 11 种主要语言）。',
+          '注意这些都是官方自测或官方组织的众测口径，第三方独立复现尚未见到。'],
+     data:['Terminal Bench 2.1 = 71.0','NL2Repo-Bench = 47.0','众测胜率 59.1%（对 Claude Opus 4.6）'],
+     cmp:'2017 版是通用序列模型，没有代码工程交付的概念。'}},
+
+ {no:'12', y:ROW.r12, x:X_R, name:'Computer-Use Agent（GUI）', en:'MobileWorld 最高分 · 平均步数 −16%', face:'CUA', color:'#2DD4BF', side:1,
+  inner:[['手机 GUI 操作','官方能力项'],['桌面 OS 与浏览器','官方能力项'],['GUI 与非 GUI 动作切换','强化学习引导'],['平均步数减少 16%','官方口径']],
+  d:{what:'官方把这一方向称为通用型 Computer-Use Agent：模型能在聊天、搜索、浏览器、代码仓库、文件与外部工具之间切换并持续推进任务。',
+     how:['官方发布博客：面对手机 GUI 任务，模型在 MobileWorld 基准中取得最高分；在 OSWorld 上保持竞争力。⚠ 官方 Model Card 注明这些基准跑在 Generalist Computer-Use Agent 设定下（非 GUI-only），且 MobileWorld 因部署问题排除了 MCP 测试分片；另外官方对 MobileWorld 的具体分数在两处表格里分别写作 73.3 与 73.1，自身不一致，故本图只写「最高分」不给数字。',
+          '官方称通过强化学习引导 Agent 在 GUI 与非 GUI 动作空间之间自然切换最优选择，把完成任务所需的平均步数减少了 16%。',
+          '官方自研基准 CreativeWork 覆盖 Notion、Canva、Figma 三类环境，用于评估 Agent 协同使用 GUI 与 MCP 工具的能力。',
+          '官方给出的实际形态示例：理解屏幕内容、判断下一步、完成点击输入与应用切换。'],
+     data:['MobileWorld：官方称最高分','平均步数 −16%（官方口径）','CreativeWork 为官方自研基准'],
+     cmp:'2017 版是纯文本模型，不存在界面操作的概念。'}},
+
+ {no:'13', y:ROW.r13, x:X_R, name:'工具与协议', en:'Function Call · 联网 · 知识库 · MCP', face:'TOOLS', color:'#38BDF8', side:1,
+  inner:[['Function Call','列在「模型能力」一栏'],['联网搜索','模型工具 · 经 Responses API'],['知识库','模型工具 · 经 Responses API'],['MCP','模型工具 · 经 Responses API'],['结构化输出','推荐 json_schema 模式']],
+  d:{what:'官方模型页逐项列出的工具与协议能力，以及 API 兼容范围。',
+     how:['官方模型页的「模型工具」一栏实际只列三项：联网搜索、知识库、MCP——每项右侧标注的「Responses API」是**调用方式**，不是第四项工具。Function Call 列在「模型能力」一栏。',
+          '结构化输出一栏官方特别注明「推荐使用 json_schema 模式」。',
+          'API 支持范围：Chat Completions（/v3/chat/completions）、Responses（/v3/responses）、Tokenization（/v3/tokenization）。',
+          '模型页同时列出「模型精调」与「批量推理（batch_job / batch_chat）」等在线能力。'],
+     data:['Function Call / 联网 / 知识库 / MCP','结构化输出：推荐 json_schema','API：Chat Completions · Responses · Tokenization'],
+     cmp:'2017 版直接输出概率分布，没有工具调用协议。'}},
+
+ {no:'14', y:ROW.r14, x:X_R, name:'服务规格与缓存', en:'TPM 1000k · 隐式 + 显式缓存', face:'SERVICE', color:'#A855F7', side:1,
+  inner:[['TPM 1000k / RPM 500','官方模型页'],['隐式缓存','自动识别公共前缀'],['显式缓存','前缀 + Session 缓存'],['缓存命中 1.2 元','每百万 token']],
+  d:{what:'官方模型页给出的部署规格与计费方式——这些是运营参数，不是架构参数，但同样属于官方一手信息。',
+     how:['限流：TPM 1000k、RPM 500（非刚性保障，受平台负载影响）。',
+          '定价：推理输入 6 元/百万 token、输出 30 元/百万 token、缓存命中 1.2 元/百万 token、缓存存储 0.017 元/百万 token/小时；批量推理输入 3 元、输出 15 元；低优（Flex）推理输入 3 元、输出 15 元。',
+          '缓存分两类：隐式缓存自动识别请求中的公共前缀、无需配置；显式缓存通过前缀缓存与 Session 缓存提高命中率。',
+          '⚠ 这些参数只说明「怎么调用、怎么计费」，不说明模型内部怎么搭——不要把它读成架构信息。'],
+     data:['TPM 1000k / RPM 500','输入 6 / 输出 30 / 缓存命中 1.2 元','隐式 + 显式两类缓存'],
+     cmp:'2017 版没有服务层参数的概念。'}},
+
+ {no:'15', y:ROW.r15, x:X_R, name:'Output Logits', en:'仅文本输出 · 闭源 API', face:'OUTPUT', color:'#E5E7EB', side:1,
+  inner:[['输出仅文本','官方模型页'],['未开源权重','无 config.json'],['仅火山方舟 API','Model ID doubao-seed-2-1-pro-260628'],['2026-06-23 发布','FORCE 大会']],
+  d:{what:'输出层与开放方式。',
+     how:['输出形态只有文本（输入支持文本 / 图片 / 视频）。',
+          '本模型未开源：没有开放权重、没有 config.json、没有独立技术报告，只能通过火山方舟 API 调用（Model ID：doubao-seed-2-1-pro-260628）。',
+          '发布时间：2026-06-23，火山引擎 FORCE 原动力大会（日期以官方博客页面标注为准；部分二手写 06-24，为大会当日）；同系列另有 Doubao-Seed-2.1-turbo——官方口径是「Pro、Turbo 两款**不同尺寸**的模型」，同为 256K 上下文，价格约为 Pro 的一半；此外还有持续迭代的 Seed-Evolving（上下文 1024k）。',
+          '官方也在往研发流程里用：提出「Seed for Seed」方向，让 Seed2.1 以 Agent 形式参与评测系统构建、能力诊断、SFT 数据合成、RL 训练框架优化。'],
+     data:['输出：仅文本','闭源 · 仅火山方舟 API','2026-06-23 发布'],
+     cmp:'2017 版是论文，没有服务化、没有协议、没有产品形态。'}},
+];
+
+/* =====================================================================
+   数据：左侧 —— Original Transformer (2017) 对照基线
+   ===================================================================== */
+const LEFT = [
+ {no:'A1', name:'Input Embedding + 位置编码', en:'正弦位置编码', face:'EMBED + PE', color:'#3F4B5B', side:-1,
+  inner:[['词表 Embedding','离散 token → 稠密向量'],['正弦位置编码','固定公式，与 embedding 相加']],
+  d:{what:'2017 版输入的起点：词表查表得到 embedding，再与固定公式生成的正弦位置向量相加。',
+     how:['位置信息以「加法」注入输入层，之后每一层都能看到。','正弦编码不需要训练，但外推能力有限。'],
+     data:['Transformer, 2017'], cmp:'→ Seed2.1 的词表与嵌入维度官方未公开，位置编码方案同样未公开，本图不推测。'}},
+ {no:'A2', name:'Masked Multi-Head Attention ×N', en:'因果掩码自注意力 · 该块重复 N 层', face:'MASKED MHA', color:'#4A5769', side:-1, stack:1,
+  inner:[['Q / K / V 投影','逐头线性映射'],['因果掩码','未来位置权重置为负无穷'],['逐头注意力','O(L²) 完整点积'],['每层独立 KV','层与层之间不共享']],
+  d:{what:'2017 版解码器的第一层注意力，用因果掩码保证每个位置只能看到自己和之前的位置。',
+     how:['掩码矩阵把未来位置的注意力权重置为负无穷。',
+          '每个位置都要对全体历史做 Q·K 点积，计算量随序列长度平方增长。',
+          '2017 版的层数在论文里有明确记载；Seed2.1 的层数与注意力机制官方未公开，两者不可比。'],
+     data:['因果掩码','O(L²) 复杂度','每层独立 KV'],
+     cmp:'→ Seed2.1 的注意力机制（头数、KV 压缩方式、位置编码）官方均未公开，本图不填。'}},
+ {no:'A3', name:'Add & Norm', en:'残差 + LayerNorm', face:'ADD & NORM', color:'#37404E', side:-1,
+  inner:[['残差相加','x + f(x) 单车道'],['LayerNorm','归一化，维持深层可训练']],
+  d:{what:'残差相加后做层归一化，保证深层网络可训练。',
+     how:['x + f(x) 的单车道残差设计一直沿用至今；这一层各代模型基本一致，不是本图的差异点。'],
+     data:['单流残差'], cmp:'→ 归一化的具体形式与 eps，Seed2.1 官方未公开。'}},
+ {no:'A4', name:'Multi-Head Cross-Attention', en:'K/V 来自 Encoder 输出', face:'CROSS-ATTN', color:'#4A5769', side:-1,
+  inner:[['Q 来自解码器','当前生成位置的表示'],['K / V 来自编码器','每次都要读编码器全长'],['逐层重复','每层各做一遍']],
+  d:{what:'解码器读取编码器输出的桥梁：Q 来自解码器，K/V 来自编码器。',
+     how:['这是 2017 版「编码器—解码器」的做法：跨注意力每层都重新对编码器全长做注意力。',
+          '如今的自回归大模型普遍取消编解码器分治，改为单栈主干——Seed2.1 属于后者（这是行业通例，不是官方对本模型的具体说明）。'],
+     data:['逐层跨注意力'], cmp:'→ 现代单栈主干没有跨注意力这一层。'}},
+ {no:'A5', name:'Add & Norm', en:'残差 + LayerNorm', face:'ADD & NORM', color:'#37404E', side:-1,
+  inner:[['残差相加','跨注意力输出'],['LayerNorm','归一化']],
+  d:{what:'跨注意力输出的残差与归一化。', how:['与前一处同构。'], data:['—'], cmp:'—'}},
+ {no:'A6', name:'Feed Forward（稠密）', en:'Dense FFN · 两层全连接', face:'DENSE FFN', color:'#4A5769', side:-1,
+  inner:[['Linear 升维','隐状态 → 中间维度'],['激活函数','非线性'],['Linear 降维','回到隐状态维度'],['全部参数激活','每个 token 都走完整 FFN']],
+  d:{what:'2017 版的 FFN 是稠密的：每个 token 都要经过全部参数。',
+     how:['结构是 Linear → 激活 → Linear，逐位置独立计算。',
+          '参数总量与每 token 计算量直接绑定：想变强就得整体变大，成本同步上升。',
+          '这正是稀疏专家架构要解决的问题——而 Seed2.1 是否采用稀疏专家、采用何种形式，**官方文档并未说明**（见右侧节点 04 / 05）。'],
+     data:['稠密激活'], cmp:'→ 稀疏化是行业通例，但本模型的具体做法官方未公开，本图不填。'}},
+ {no:'A7', name:'Add & Norm', en:'残差 + LayerNorm', face:'ADD & NORM', color:'#37404E', side:-1,
+  inner:[['残差相加','FFN 输出'],['LayerNorm','归一化']],
+  d:{what:'FFN 输出的残差与归一化。', how:['与前两处同构。'], data:['—'], cmp:'—'}},
+ {no:'A8', name:'Linear', en:'隐状态 → 词表维度', face:'LINEAR', color:'#39424F', side:-1,
+  inner:[['线性投影','隐状态 → 词表大小'],['输出 Logits','未归一化分数']],
+  d:{what:'把最后一层隐状态投影到词表维度。',
+     how:['输出维度等于词表大小，得到每个 token 的未归一化分数（logits）。',
+          'Seed2.1 的词表大小官方未公开，因此本图不填具体数字。'],
+     data:['词表投影'], cmp:'→ 输出词表规模：官方未公开。'}},
+ {no:'A9', name:'Softmax → 输出概率', en:'逐 token 采样', face:'SOFTMAX', color:'#39424F', side:-1,
+  inner:[['Softmax','logits → 概率分布'],['采样','按策略选出下一个 token'],['拼回输入','自回归循环']],
+  d:{what:'Softmax 把 logits 归一化成概率分布，按策略采样出下一个 token。',
+     how:['自回归：采出的 token 拼回输入，再跑下一次前向。',
+          '每一步都要重新读一遍不断增长的 KV Cache——这就是长上下文成本的来源，也是各家做各种 KV 压缩与缓存复用的动机。'],
+     data:['逐 token 自回归'], cmp:'→ Seed2.1 提供的加速手段（思考档位、缓存复用、Deep Think 循环）见右侧节点 08 / 09 / 14。'}},
+];
+
+/* =====================================================================
+   大白话讲解：给零基础读者的一段话。刻意不用术语，用生活类比。
+   ===================================================================== */
+const PLAIN = {
+'01':'喂给模型的东西可以是文字、图片，也可以是视频；但它只会用文字回你。这一点很关键——「能看懂图」和「能画图」是两件事，这个模型只做前者。',
+'02':'它「看得懂」画面和视频，而且在这类考试里成绩不错：认图表、读文档、判断空间关系、看视频里谁在动、动作怎么变化。但你要问「它是怎么把图变成数字的」——官方没说，所以这里空着，不猜。',
+'03':'它能一次记住 256K 的内容。有个少见的地方：它不只「读」的上限是 256K，「写」的上限和「思考」的上限也标成 256K。另外同系列还有一个会自己持续升级的版本，那个版本的窗口是 1024K——不是这个型号，别混。',
+'04':'这一格是空的，而且是「故意空着」。这一代官方只公开了怎么调用、多少钱、考了多少分，**完全没说模型里面怎么搭的**：多少参数、多少层、多少个专家、词表多大，一个字都没有。网上有种说法是「200B 参数、激活 20B」——那是更早的豆包 1.5 Pro 的数字，被安到这一代头上了；还有一个「1.2 万亿」的说法，出处是一篇看起来像机器批量生成的文章。这两个我们都不用。',
+'05':'行业里普遍认为它属于「混合专家」这一类架构。但要老实说：连这一点，官方的模型卡和发布博客都没写。其他几家的模型卡通常会写明架构类型，这一家没写。所以这一格放在这里，但标的是「转述口径」，不是官方规格；至于有多少个专家、每次叫几个，全都不填。',
+'06':'这是字节自己公开过的一项研究成果，叫 UltraMem，专门解决「混合专家模型推理时反复搬数据太慢」的问题，论文被 ICLR 2025 收了，说推理能快 2 到 6 倍、成本最多降 83%。**但它和这一代豆包模型有没有关系，官方从没说过**——而且论文发表在 2024 年 11 月，比这个模型早一年多。放在这里只是让你知道「这家公司为什么总在讲推理成本」，不是这个模型的规格。',
+'07':'同样是字节公开过的另一项工程成果，叫 COMET，解决的是「专家分布在不同卡上、互相传数据太慢」的问题，官方说单层能快 1.96 倍、整体省 40% 的硬件成本。**同样地，没有任何官方材料把它和这一代豆包联系起来**，发布博客里根本没出现这三个字。',
+'08':'它有一套「想多久」的控制参数，官方文档里列了两个名字。但官方只列了参数名，**没说有几个档位、每档是什么**——网上说的「四档」是别人整理的，我们不用。',
+'09':'这是一个专门给「前沿研究和高难度工程」用的模式。它的做法是四步循环：先推一遍，再验证，发现不对就改，最后挑一个最好的。关键在验证这一步——它不是光在脑子里想，**是真的去联网搜、去沙盒里跑代码**。这一条是发布会上讲的，官方博客和模型卡里都没有这三个字，所以要注明来源等级。另外值得对照一句官方自己的总结：在最难的开放任务上，它承认还有提升空间。',
+'10':'它的第一个主打能力是「当助手把活干完」：跨好几个工具、跨好几个环境，自己规划步骤、处理文件、反复调用工具，最后交出能用的结果。官方说它在专门评估这类经济价值的榜单上拿了最高分，也强调其中一个榜单是新出的、各模型没法提前针对它刷分。',
+'11':'第二个主打能力是写代码「端到端交付」：从看懂需求、写出来、修 bug、把运行环境搭起来，一直到验证结果，全程自己走完，而不是只给你一段代码片段。官方还组织了一次开发者盲测，让真实开发者拿匿名模型对比，说它对这个对手的胜率是 59.1%。这些是官方自己的口径。',
+'12':'第三个方向是「像人一样操作电脑和手机」：看懂屏幕、决定下一步点哪里、打字、切应用。官方说它在手机操作类榜单上拿最高分，还提到用强化学习让它学会在「点界面」和「调接口」之间切换，所以完成任务的平均步骤少了 16%。',
+'13':'这是它能接的东西的清单：调用外部函数、联网搜索、连知识库、连 MCP 工具，还有结构化输出。这些都是官方文档里逐项列出来的，属于可以照抄的部分。',
+'14':'这些是运营参数，不是架构信息：每秒能接多少请求、每百万字收多少钱、缓存命中怎么打折。缓存分两种——一种自动识别你重复发的前缀，一种要你自己显式开。这类数字看官方文档就行，但它们**不能拿来推断模型有多大多深**。',
+'15':'最后几件事：它只输出文字；它没有开源，没有权重文件可下载，只能通过火山方舟的接口调用；上线时间是 2026 年 6 月 23 日。官方还提到一个有意思的方向：让这个模型自己去参与下一代模型的研发，做评测、找问题、合成训练数据、优化训练框架。',
+'A1':'老办法是把「词的意思」和「词的位置」两串数字直接加起来喂进去。简单直接，但位置是死记的固定公式，句子超出训练范围就不好使了。',
+'A2':'写第 5 个字的时候不能偷看第 6 个字，否则就是抄答案。所以用一个「遮罩」把后面的字盖住。麻烦在于：每写一个字都要回头看一遍前面所有字，文章越长越慢。',
+'A3':'每算完一步都做两件事：先把这一步的结果和原来的值相加（相当于保留原话，别算着算着就忘了），再统一量一下尺度（防止数字越滚越大）。',
+'A4':'老办法里写答案的每一层都要重新翻一遍原文，越翻越贵。现在的模型普遍不分成「读的」和「写的」，从头到尾一个模型自己往下算。',
+'A5':'同上，每算完一步就「保留原话 + 统一尺度」。',
+'A6':'老办法这一层是「全员上岗」：不管来什么词，所有参数都得算一遍。想变强只能整体变大，成本跟着一起涨。现在大家都在想办法「按需叫人」——具体怎么叫，这个模型的官方没说。',
+'A7':'同上，每算完一步就「保留原话 + 统一尺度」。',
+'A8':'把最后一层的内部表示，换算成「词表里每个词各得多少分」。词表有多大？这个模型官方没说。',
+'A9':'把分数换成概率（加起来刚好等于 1），然后抽签决定下一个字。抽完这个字要把它接回输入、再走一遍全过程——这就是它慢的根本原因，也是各种加速手段的动机所在。',
+'EXP_ON':'（本图未绘制专家池——该模型的专家数量官方未公开，画出阵列等于暗示已知数量。）',
+'EXP_OFF':'（本图未绘制专家池——该模型的专家数量官方未公开，画出阵列等于暗示已知数量。）'
+};
+
+/* =====================================================================
+   场景组装
+   ===================================================================== */
+/* 注：曾经画过「层间连接板」「底部纵深轨道」「×N 层叠薄片」三种装饰几何，均已移除。
+   原因：架构图里每个图元都会被默认读作"有含义的模块"，没有标注的几何一律会被误读
+   （实测被连续问过三次"这是什么"）。这些信息改用文字表达。 */
+
+/* （Doubao-Seed-2.1-pro 的架构参数官方全部未公开，本图既不画珠链也不画专家阵列，
+   所有「疑似底座」只以节点形式呈现并标注为推断。） */
+
+/* Doubao-Seed-2.1-pro 的专家配置（是否有专家、专家数量、每 token 激活数、
+   路由策略）官方全部未公开，因此本页不绘制专家池 —— 画出专家方块阵列
+   会暗示已知的专家数量，属于无依据的视觉表达。FANS 保持为空。 */
+const FANS = { };
+/* Doubao-Seed-2.1-pro 的专家配置（数量、激活数、路由策略）官方从未公开，
+   因此本图不绘制专家池——画出专家阵列会暗示已知专家数量，属于无依据的视觉表达。 */
+
+/* =====================================================================
+   节点注册（统一可点击对象）
+   ===================================================================== */
+const NODES = [];      // 带标签的主模块
+const ALL   = [];      // 全部可点击对象（主模块 + 专家）
+
+RIGHT.forEach(b=>{
+  const el = makeBox({x:b.x, y:b.y, z:0, w:BW, h:BH, d:DEF_D, color:b.color, face:b.face, hit:true});
+  NODES.push(Object.assign({}, b, {wx:b.x, wy:b.y, wz:0, w:BW, h:BH, bd:DEF_D, el:el, label:true, idx:ALL.length}));
+  ALL.push(NODES[NODES.length-1]);
+});
+LEFT.forEach((b,i)=>{
+  const y = LROW[i];
+  const el = makeBox({x:X_L, y:y, z:0, w:BW, h:BH, d:DEF_D, color:b.color, face:b.face, hit:true,
+                      border:'rgba(255,255,255,.10)'});
+  NODES.push(Object.assign({}, b, {wx:X_L, wy:y, wz:0, w:BW, h:BH, bd:DEF_D, el:el, label:true, idx:ALL.length}));
+  ALL.push(NODES[NODES.length-1]);
+});
+Object.keys(FANS).forEach(k => FANS[k].forEach(n => { n.idx = ALL.length; ALL.push(n); }));
+
+/* =====================================================================
+   色块内部结构：把每个模块的 inner 子组件做成薄板，藏在色块体内。
+   放大到 150% 以上、且该块被选中时整体 X 光化、薄板显形 —— 结构可见。
+   ⚠ 薄板上不挂层名。试过多种排布都不成立：贴体内叠放投影几乎重合（层名互压）；
+     沿 z 抽开则总有一半跑到相邻色块的地盘（层距 42，远小于展开纵深）；
+     沿 x 扇形铺开时薄板自身有宽度，间距必须超过板宽才不互相遮挡。
+     所以层名交给右侧面板的等距分解图 —— 一屏读完，且不破坏 3D 可读性。
+   薄板沿竖直方向等分排布（上下叠），而不是沿纵深排：沿纵深排时各片在屏幕上会横着
+   铺成一长条、几乎填满外壳轮廓，而外壳 X 光后边缘很淡，看起来就像"内层溢出到外面"。
+   尺寸留出内边距，保证严格落在外壳体内：y ±(BH-5)/2、x ±(BW-16)/2、z ±(bd-10)/2。
+   ===================================================================== */
+NODES.forEach(n=>{
+  if (!n.inner || !n.inner.length) return;
+  const cnt  = n.inner.length;
+  const innerH = BH - 5;
+  const slot = innerH / cnt;
+  const ph   = Math.max(2, slot - 1.6);
+  n.plates = [];
+  for (let k = 0; k < cnt; k++){
+    const y = n.wy - innerH/2 + slot*(k + 0.5);   // k=0 在最下，与面板等距图「自下而上」一致
+    const lift = cnt > 1 ? 0.16 + 0.16*(k/(cnt-1)) : 0.24;
+    const el = makeBox({
+      x: n.wx, y: y, z: 0,
+      w: BW - 16, h: ph, d: n.bd - 10,
+      color: n.color, border: 'rgba(255,255,255,.30)',
+      faces: ['front','top','right','left'], boxCls: 'plate'
+    });
+    const f = el.querySelector('.f-front'), t = el.querySelector('.f-top'),
+          r = el.querySelector('.f-right'), l = el.querySelector('.f-left');
+    if (f) f.style.background = shadeA(n.color, lift, 1);
+    if (t) t.style.background = shadeA(n.color, lift + 0.30, 1);
+    if (r) r.style.background = shadeA(n.color, lift - 0.22, 1);
+    if (l) l.style.background = shadeA(n.color, lift - 0.38, 1);
+    n.plates.push(el);
+  }
+});
+
+/* 开关：色块「打开 / 合上」。这里是整体 X 光，不是只把正面变透明 ——
+   薄板贴在体内，若背面/底面仍不透明就会把后几层挡住。
+   各面按原本的受光关系取不同透明度，变透明后仍能读出一块方体的体积感。
+   透明度必须写在内联样式上，不能设在 .box 上 —— 透明度会让 preserve-3d 被扁平化。 */
+const XA = { front:[0.06,0.13], top:[0.40,0.27], right:[-0.18,0.21],
+             left:[-0.35,0.15], bottom:[-0.50,0.17], back:[-0.50,0.09] };
+const OPEN_ZOOM = 1.5;                 // 打开内部结构所需的缩放倍率
+function setNodeOpen(n, on){
+  if (!n || !n.el) return;
+  n.el.classList.toggle('open', on);
+  n.el.querySelectorAll('.face').forEach(f=>{
+    if (f._bg === undefined) f._bg = f.style.background;
+    if (f._bc === undefined) f._bc = f.style.borderColor;
+    const key = (f.className.match(/f-(\w+)/) || [0,'front'])[1];
+    const a = XA[key] || XA.front;
+    f.style.background = on ? shadeA(n.color, a[0], a[1]) : f._bg;
+    // 打开时把壳的棱线提亮：X 光后边缘太淡，观众看不出"内层到底有没有出框"
+    f.style.borderColor = on ? 'rgba(255,255,255,.34)' : f._bc;
+  });
+  if (n.plates) n.plates.forEach(e => e.classList.toggle('vis', on));
+}
+let openedNode = null;
+/* 只有「放大到 150% 以上」且「这一块被选中」时才打开内部结构；
+   其余色块保持实心 —— 全部一起打开会让整张图变成一片条纹，反而看不清。 */
+function applyOpen(){
+  const want = (uz >= OPEN_ZOOM && selected && selected.plates) ? selected : null;
+  if (want === openedNode) return;
+  setNodeOpen(openedNode, false);
+  openedNode = want;
+  setNodeOpen(openedNode, true);
+}
+
+/* 分组范围（2D 投影括号） */
+const GROUPS = [
+  {x1:X_R-BW/2-18, x2:X_R+BW/2+18, y1:ROW.r01+BH/2+16, y2:ROW.r03-BH/2-16,
+   t:'OFFICIALLY DISCLOSED',   lx:X_R-BW/2-120, ly:ROW.r01+BH/2+36, anchor:'end'},
+  {x1:X_R-BW/2-18, x2:X_R+BW/2+18, y1:ROW.r04+BH/2+16, y2:ROW.r05-BH/2-16,
+   t:'ARCHITECTURE · 未公开',   lx:X_R-BW/2-120, ly:ROW.r04+BH/2+36, anchor:'end'},
+  {x1:X_R-BW/2-18, x2:X_R+BW/2+18, y1:ROW.r06+BH/2+16, y2:ROW.r07-BH/2-16,
+   t:'INFERRED BACKBONE · 推断',   lx:X_R-BW/2-120, ly:ROW.r06+BH/2+36, anchor:'end'},
+  {x1:X_R-BW/2-18, x2:X_R+BW/2+18, y1:ROW.r08+BH/2+16, y2:ROW.r15-BH/2-16,
+   t:'AGENT / CODING / SERVICE',   lx:X_R-BW/2-120, ly:ROW.r08+BH/2+36, anchor:'end'},
+  {x1:X_L-BW/2-16, x2:X_L+BW/2+16, y1:LROW[0]+BH/2+16, y2:LROW[8]-BH/2-16,
+   t:'ORIGINAL TRANSFORMER  2017', lx:X_L+BW/2+26, ly:LROW[0]+BH/2+36, anchor:'start'}
+];
+
+/* ---------- 图例 / 指标 ---------- */
+const LEGEND = [
+  ['#3B82F6','输入 / 上下文'], ['#6366F1','图像与视频理解'], ['#64748B','官方未公开'],
+  ['#F59E0B','MoE（转述口径）'], ['#8B5CF6','UltraMem（推断）'], ['#0EA5E9','COMET（推断）'],
+  ['#7C3AED','思考模式'], ['#EF4444','Deep Think'], ['#EC4899','通用 Agent'],
+  ['#22D3EE','代码工程'], ['#2DD4BF','CUA / GUI'], ['#38BDF8','工具与协议'],
+  ['#E5E7EB','输出'], ['#475569','2017 对照基线']
+];
+document.getElementById('legend').innerHTML =
+  LEGEND.map(([c,t]) => '<span class="lg"><i style="background:' + c + '"></i>' + t + '</span>').join('');
+
+const METRICS = [
+  ['256K','CONTEXT','上下文窗口'],
+  ['256K','MAX OUTPUT','最大输出与思考长度'],
+  ['文本·图片·视频','INPUT','输出为文本'],
+  ['89.2','VIDEOMME','官方 Model Card'],
+  ['81.6','MMMU-PRO (w. Tool)','官方 Model Card'],
+  ['59.1%','CODING 众测胜率','对比 Claude Opus 4.6'],
+  ['闭源','LICENSE','未开源权重 · 仅 API'],
+  ['未公开','LAYERS / EXPERTS','官方未发布架构',1]
+];
+document.getElementById('metrics').innerHTML = METRICS.map(([v,e,z,a]) =>
+  '<div class="m' + (a?' acc':'') + '"><u>' + v + '</u><span class="e">' + e +
+  '</span><span class="z">' + z + '</span></div>').join('');
+
+/* ---------- 等距内部结构图（SVG） ---------- */
+function isoStack(items, color){
+  const N = items.length, W = 110, D = 80, T = 14, GAP = 34;
+  const K = 0.866, J = 0.5;
+  const P = (x,y,z) => [ (x-z)*K, (x+z)*J - y ];
+  const pts = a => a.map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
+  let g = '';
+  for (let i=0;i<N;i++){
+    const y0 = i*GAP, y1 = y0 + T;
+    const x1 = -W/2, x2 = W/2, z1 = -D/2, z2 = D/2;
+    const top = [P(x1,y1,z1),P(x1,y1,z2),P(x2,y1,z2),P(x2,y1,z1)];
+    const fr  = [P(x1,y0,z2),P(x2,y0,z2),P(x2,y1,z2),P(x1,y1,z2)];
+    const rt  = [P(x2,y0,z1),P(x2,y0,z2),P(x2,y1,z2),P(x2,y1,z1)];
+    // 自下而上绘制：先侧面后顶面
+    g += '<polygon points="' + pts(rt) + '" fill="' + shade(color,-0.40) + '" stroke="rgba(255,255,255,.10)"/>';
+    g += '<polygon points="' + pts(fr) + '" fill="' + shade(color,-0.10) + '" stroke="rgba(255,255,255,.16)"/>';
+    g += '<polygon points="' + pts(top) + '" fill="' + shade(color, 0.30) + '" stroke="rgba(255,255,255,.18)"/>';
+    // 引线 + 文字
+    const lx = P(x2,y1,z2)[0], ly = P(x2,y1,z2)[1];
+    const tx = (W/2 + D/2)*K + 12, ty = (x2+z2)*J - y1 - 2;
+    g += '<path class="iso-line" d="M' + lx.toFixed(1) + ',' + ly.toFixed(1) + 'L' + (tx-6) + ',' + ty.toFixed(1) + '"/>';
+    g += '<text class="ty" x="' + tx + '" y="' + ty.toFixed(1) + '">' + NUM[i] + ' ' + items[i][0] + '</text>';
+    g += '<text class="td" x="' + tx + '" y="' + (ty+13) + '">' + items[i][1] + '</text>';
+  }
+  const yTop = -47.5 - ((N-1)*GAP + T) - 10;
+  const yBot = 47.5 + 10;
+  const vb = (-92) + ' ' + yTop.toFixed(1) + ' ' + (92 + 100 + 224) + ' ' + (yBot - yTop).toFixed(1);
+  return '<svg class="iso" viewBox="' + vb + '" preserveAspectRatio="xMinYMin meet">' + g + '</svg>';
+}
+
+/* ---------- 标签（仅主模块） ---------- */
+const labelStore = [];
+NODES.forEach(n=>{
+  const el = document.createElement('div');
+  el.className = 'lbl';
+  let en = n.en || '';
+  if (n.side < 0) en = '';
+  else if (en.length > 20) en = en.slice(0,19) + '…';
+  el.innerHTML = '<span class="no">' + n.no + '</span><b>' + n.name + '</b>' +
+                 (en ? '<span class="en">' + en + '</span>' : '');
+  el.addEventListener('click', e=>{ e.stopPropagation(); select(n); });
+  el.addEventListener('mouseenter', ()=> hover(n, true));
+  el.addEventListener('mouseleave', ()=> hover(n, false));
+  labelsEl.appendChild(el);
+  labelStore.push({node:n, el:el});
+});
+
+/* ---------- SVG 元素池：连线 / 括号只创建一次，之后每帧只改属性 ----------
+   原先每帧 `wires.innerHTML = '...'` 会重建四十多个 DOM 节点，60fps 下就是每秒数千次
+   字符串解析 + 节点创建销毁 —— 这是本页最大的一笔 CPU 开销。 */
+const NSV = 'http://www.w3.org/2000/svg';
+function svgNode(tag, attrs){
+  const e = document.createElementNS(NSV, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  wires.appendChild(e);
+  return e;
+}
+measureView();
+const gPolys = GROUPS.map(()=> svgNode('polygon', {fill:'none', stroke:'rgba(255,255,255,.15)',
+  'stroke-width':1, 'stroke-linejoin':'round'}));
+const gTexts = GROUPS.map(gr=>{
+  const t = svgNode('text', {fill:'rgba(255,255,255,.36)', 'font-family':'ui-monospace,Menlo,monospace',
+    'font-size':9.5, 'letter-spacing':1.5, 'text-anchor':gr.anchor});
+  t.textContent = gr.t;
+  return t;
+});
+const lPaths = [], lDots = [];
+labelStore.forEach(o=>{
+  lPaths.push(svgNode('path', {fill:'none', stroke:'rgba(255,255,255,.19)', 'stroke-width':1}));
+  lDots.push(svgNode('circle', {r:2.2, fill:o.node.color}));
+});
+
+/* ---------- 每帧布局 ---------- */
+function layout(){
+  const m = M();
+  stage.style.perspective = (P0 * m).toFixed(2) + 'px';   // 与场景同比缩放 = 纯光学变焦
+  world.style.transform = 'translateX(' + (panX + upx).toFixed(1) + 'px) translateY(' + upy.toFixed(1) +
+                          'px) rotateX(' + thx + 'deg) rotateY(' + thy + 'deg) scale3d(' +
+                          m.toFixed(5) + ',' + m.toFixed(5) + ',' + m.toFixed(5) + ')';
+
+  /* 标签字号跟随缩放：否则窄屏/面板展开把图缩小时，标签仍是原尺寸，
+     会把方块挤成一团而标签占满屏，且防重叠间距（固定 px）会远超方块间距。
+     放大时也给一点跟随（上限 1.9），不然 600% 下方块很大而标注还是 11px。 */
+  const ls = Math.max(0.72, Math.min(1.9, m));
+  if (labelsEl._ls !== ls){ labelsEl._ls = ls; labelsEl.style.setProperty('--ls', ls.toFixed(3)); }
+
+  /* 放大且选中时，把这一块的内部结构打开 */
+  applyOpen();
+
+  GROUPS.forEach((gr, i)=>{
+    const a = project(gr.x1, gr.y1, 0), b = project(gr.x2, gr.y1, 0);
+    const c = project(gr.x2, gr.y2, 0), d = project(gr.x1, gr.y2, 0);
+    gPolys[i].setAttribute('points',
+      [a,b,c,d].map(p=>p.sx.toFixed(1)+','+p.sy.toFixed(1)).join(' '));
+    const lp = project(gr.lx, gr.ly, 0);
+    gTexts[i].setAttribute('x', lp.sx.toFixed(1));
+    gTexts[i].setAttribute('y', lp.sy.toFixed(1));
+  });
+
+  const panes = {'1':[], '-1':[]};
+  labelStore.forEach(o=>{
+    const n = o.node;
+    const pop = (popped === n) ? 1 : 0;
+    const k = 1 + pop*0.07, zz = n.wz + pop*46;
+    const p = project(n.wx*k + (n.side > 0 ?  BW/2*k + 4 : -(BW/2*k + 4)), n.wy*k, zz);
+    const h = project(n.wx*k, n.wy*k, zz);
+    o.ax = p.sx; o.ay = p.sy; o.hx = h.sx;
+    panes[n.side > 0 ? '1' : '-1'].push(o);
+  });
+  ['1','-1'].forEach(k=>{
+    const arr = panes[k].sort((a,b)=> a.ay - b.ay);
+    let prev = -1e9;
+    arr.forEach(o=>{ o.ly = Math.max(o.ay, prev + 26*ls); prev = o.ly; });
+  });
+
+  labelStore.forEach((o, i)=>{
+    const n = o.node, gap = 15, on = selected === n;
+    const dim = demo && !on && n !== demoPrev;      // 上一步保持亮，箭头两端都看得清
+    o.el.classList.toggle('on', on);
+    let d;
+    if (n.side > 0){
+      o.el.style.left = (o.ax + gap) + 'px';
+      o.el.style.transform = 'translateY(-50%)';
+      d = 'M' + o.ax + ',' + o.ay + 'L' + (o.hx + 12) + ',' + o.ay + 'L' + (o.ax + gap - 3) + ',' + o.ly;
+    } else {
+      o.el.style.left = (o.ax - gap) + 'px';
+      o.el.style.transform = 'translate(-100%,-50%)';
+      d = 'M' + o.ax + ',' + o.ay + 'L' + (o.hx - 12) + ',' + o.ay + 'L' + (o.ax - gap + 3) + ',' + o.ly;
+    }
+    o.el.style.top = o.ly + 'px';
+    o.el.style.opacity = dim ? '0.22' : '';
+    lPaths[i].setAttribute('d', d);
+    lPaths[i].setAttribute('stroke', dim ? 'rgba(255,255,255,.055)' : 'rgba(255,255,255,.19)');
+    lDots[i].setAttribute('cx', o.ax.toFixed(1));
+    lDots[i].setAttribute('cy', o.ay.toFixed(1));
+    lDots[i].setAttribute('fill-opacity', dim ? 0.2 : 1);
+  });
+}
+
+/* ---------- 演示用的 3D 弯曲箭头 ----------
+   形态：从「上一色块」的左缘伸出一根弯管，向左鼓出一段弧，再弯回「当前色块」的
+   左侧三分之一处；颜色取源色块的颜色；末端是沿切线方向的锥形箭头。
+   跑马灯 = 三颗光点沿曲线单向跑动（位置由 tick 逐帧写入，仅演示期间）。
+   ⚠ 管身由间距远小于自身尺寸的同色方块叠成，才读作一根连续弯管；
+     若方块之间有可见间隙、或各自带明显边框，就会退化成"梯子"（上一版被用户指出过）。 */
+const ARC_Z = 22, ARC_N = 26, ARC_HEAD = 4;
+let arcEls = [], arcPts = [], arcT = 0, arcCtl = null;
+
+function arcAt(t){
+  const u = 1 - t, p = arcCtl;
+  return { x: u*u*p.sx + 2*u*t*p.cx + t*t*p.ex,
+           y: u*u*p.sy + 2*u*t*p.cy + t*t*p.ey };
+}
+function arcPos(f){
+  if (arcPts.length < 2) return {x:0, y:0};
+  const k = f * (arcPts.length - 1);
+  const i = Math.min(arcPts.length - 2, Math.max(0, Math.floor(k)));
+  const r = k - i, a = arcPts[i], b = arcPts[i + 1];
+  return { x: a.x + (b.x - a.x) * r, y: a.y + (b.y - a.y) * r };
+}
+const RUNNER_N = 3, FADE = 0.16;      // 光点个数 / 两端淡入淡出的区间比例
+const arrowRunners = Array.from({length: RUNNER_N}, ()=> makeBox({
+  x:0, y:0, z:ARC_Z + 7, w:8, h:8, d:8, color:'#FFFFFF',   // 比管身细，才读作"光点"而不是白管子
+  border:'rgba(255,255,255,.9)', faces:['front','top','right','left'], boxCls:'abead'}));
+/* 光点一律沿 f: 0→1 单向移动（0 = 源色块，1 = 目标色块），也就是「从上一层流入下一层」。
+   ⚠ 两端必须淡入淡出：光点跑到 f=1 后会取模跳回 f=0，不淡化的话观众看到的就是
+   "光点到了箭头尖端又瞬间弹回起点"，方向感会被这个回跳彻底破坏。
+   淡化之后读作"从上一层流出、没入下一层"，循环点不可见。 */
+function moveRunners(){
+  if (arcPts.length < 2) return;
+  arrowRunners.forEach((el, i) => {
+    const f = (arcT + i / RUNNER_N) % 1;
+    const p = arcPos(f);
+    el.style.transform = 'translate3d(' + p.x.toFixed(1) + 'px,' + (-p.y).toFixed(1) +
+                         'px,' + (ARC_Z + 7) + 'px)';
+    const a = Math.max(0, Math.min(1, f / FADE, (1 - f) / FADE));
+    el.querySelectorAll('.face').forEach(fc => { fc.style.opacity = a.toFixed(2); });
+  });
+}
+function advanceArrow(dt){
+  if (arcPts.length < 2) return;
+  arcT = (arcT + dt / 1500) % 1;      // 约 1.5 秒跑完全程
+  moveRunners();
+}
+function clearArrow(){
+  arcEls.forEach(e => e.remove());
+  arcEls = []; arcPts = [];
+}
+/* 起终点：源色块左缘 → 当前色块左侧三分之一处；控制点向左鼓出形成弯弧 */
+function placeArrow(cur, prev){
+  clearArrow();
+  const color = (prev || cur).color;
+  // 整根箭头放在色块【左侧】：从源色块左缘伸出、向左鼓出弯弧、再回到目标色块左三分之一
+  const sx = X_R - BW/2 - 4, sy = (prev ? prev.wy : cur.wy - 46) - 8;
+  const ex = X_R - 68,       ey = cur.wy - 7;
+  // 控制点取 -128：弧最左约在 x≈45，既在分组括号左缘（35）以内，
+  // 又完全避开 MoE 行左侧的专家池（最右到 41）—— 鼓幅再大就会压住那些可点击的小方块。
+  arcCtl = { sx:sx, sy:sy, ex:ex, ey:ey, cx:X_R - 128, cy:(sy + ey) / 2 + 10 };
+  for (let i = 0; i <= ARC_N; i++) arcPts.push(arcAt(i / ARC_N));
+
+  // 切线角：让方块本地 -y 对准曲线方向（rotZ）。管身每段都跟着切线转，
+  // 于是各段的横截面始终垂直于路径，扫出来是连续曲面而不是一摞台阶。
+  const tangentAt = t => {
+    const a = arcAt(Math.max(0, t - 0.05)), b = arcAt(Math.min(1, t + 0.05));
+    const dx = b.x - a.x, dy = b.y - a.y, L2 = Math.hypot(dx, dy) || 1;
+    return Math.atan2(dx / L2, dy / L2) * 180 / Math.PI;
+  };
+  // 管身：同色方块沿切线排布并大幅重叠 → 读作一根连续弯管
+  for (let i = 0; i < ARC_N - 1; i++){
+    const p = arcPts[i];
+    arcEls.push(makeBox({x:p.x, y:p.y, z:ARC_Z, w:12, h:7, d:12,
+                         rotZ:tangentAt(i / ARC_N),
+                         color:color, border:'rgba(0,0,0,0)',   // 分段带边框会在内侧露出锯齿
+                         faces:['front','top','right','left'], boxCls:'abead'}));
+  }
+  // 箭头：沿末端切线方向的 4 级收窄锥
+  const th = tangentAt(0.95);
+  for (let k = 0; k < ARC_HEAD; k++){
+    const q = k / (ARC_HEAD - 1);
+    const p = arcAt(0.86 + 0.14 * q);
+    const w = 21 - 16 * q;                // 21 → 5，与管身 12 宽衔接更自然
+    arcEls.push(makeBox({x:p.x, y:p.y, z:ARC_Z, w:w, h:9, d:w * 0.85, rotZ:th,
+                         color: k === ARC_HEAD - 1 ? '#FFFFFF' : color,
+                         border:'rgba(255,255,255,.5)',
+                         faces:['front','top','right','left'], boxCls:'abead'}));
+  }
+  arcT = 0;
+  moveRunners();
+}
+/* ---------- 自动演示：从输入到输出逐步走完整个前向链路 ---------- */
+const DEMO_DUR = 5200;            // 每步停留时长（毫秒）
+const DEMO_STEPS = ['01','02','03','04','05','06','07','08','09','10','11','12','13','14','15']
+  .map(no => NODES.find(n => n.no === no)).filter(Boolean);
+let demo = false, demoDone = false, demoIdx = 0, demoTimer = null, demoStart = 0, doneTimer = null;
+let demoPrev = null;               // 上一步的模块：它的标注不压暗，好让「从哪来」也看得见
+const demoHud = document.getElementById('demoHud');
+const dStep = document.getElementById('dStep');
+const dName = document.getElementById('dName');
+const dBar  = document.getElementById('dBar');
+const btnDemo = document.getElementById('btnDemo');
+
+function syncDemoBtn(){
+  btnDemo.classList.toggle('stop', demo);
+  btnDemo.textContent = demo ? '■ 停止' : '▶ 演示';
+  demoHud.classList.toggle('on', demo || demoDone);
+  demoHud.classList.toggle('done', !demo && demoDone);
+}
+/* 步骤推进用 setTimeout 计时，不依赖 rAF —— rAF 在后台标签页/无头环境会被节流或暂停，
+   而进度条的平滑推进可以交给 rAF（纯视觉，掉帧不影响流程）。 */
+function showDemoStep(){
+  const n = DEMO_STEPS[demoIdx];
+  if (!n) return;
+  select(n, true);
+  dStep.textContent = String(demoIdx + 1).padStart(2,'0') + ' / ' + DEMO_STEPS.length;
+  dName.textContent = n.name;                 // 编号已在进度里，这里不再重复
+  demoPrev = demoIdx > 0 ? DEMO_STEPS[demoIdx - 1] : null;
+  placeArrow(n, demoPrev);
+  dBar.style.width = '0%';
+  demoStart = performance.now();
+  clearTimeout(demoTimer);
+  demoTimer = setTimeout(nextDemo, DEMO_DUR);
+}
+function nextDemo(){
+  if (!demo) return;
+  demoIdx++;
+  if (demoIdx >= DEMO_STEPS.length) finishDemo();
+  else showDemoStep();
+}
+function startDemo(){
+  demo = true; demoDone = false; demoIdx = 0;
+  world.classList.add('demo');
+  auto = false; syncAuto();
+  if (thx < 12) thx = 21;                     // 太低的角度看不清层叠，抬起来
+  panTarget = panFor();
+  demoHud.classList.add('on'); demoHud.classList.remove('done');
+  showDemoStep();
+  syncDemoBtn();
+  kick();
+}
+function stopDemo(){
+  demo = false; demoDone = false;
+  world.classList.remove('demo');
+  clearTimeout(demoTimer); demoTimer = null;
+  clearTimeout(doneTimer); doneTimer = null;
+  dBar.style.width = '0%';
+  syncDemoBtn();
+  layout();
+}
+function finishDemo(){
+  demo = false; demoDone = true;
+  world.classList.remove('demo');
+  clearTimeout(demoTimer); demoTimer = null;
+  dBar.style.width = '100%';
+  dStep.textContent = '完成';
+  dName.textContent = '已走完输入 → 输出全部 ' + DEMO_STEPS.length + ' 个阶段，可点击任意色块自由查看';
+  syncDemoBtn();
+  layout();
+  kick();
+  clearTimeout(doneTimer);
+  doneTimer = setTimeout(()=>{ demoDone = false; syncDemoBtn(); }, 6000);   // 完成后自动收起 HUD
+}
+/* 演示 / 停止二合一：同一个按钮切换。空格键同效（见键盘处理）。 */
+function toggleDemo(){
+  if (demo) stopDemo();
+  else { clearTimeout(doneTimer); demoDone = false; startDemo(); }
+}
+btnDemo.onclick = toggleDemo;
+
+/* ---------- 交互 ---------- */
+let selected = null, popped = null, drag = null, justDragged = false;
+let hoverNode = null, hoverTimer = null;
+const panel = document.getElementById('panel'), pDot = document.getElementById('pDot');
+const HL = 'inset 0 1px 0 rgba(255,255,255,.26), inset 0 0 0 1px rgba(255,255,255,.05)';
+const POP = ' translateZ(24px) scale3d(1.035,1.035,1.035)';   // 幅度小一点，边缘不易抖
+const HOVER_GRACE = 170;                                      // 移出后的宽限期（毫秒）
+const glow = n => '0 0 26px ' + n.color + ', 0 0 54px ' + n.color + '55, ' + HL;
+
+function popBox(n, on){
+  if (!n.el) return;
+  n.el.style.transform = n.el._base + (on ? POP : '');
+  n.el.querySelectorAll('.face').forEach(f=>{
+    f.style.zIndex = on ? '5' : '';
+  });
+}
+/* 悬浮反馈。两个约束：
+   ① 放大态（≥150%）下不做任何 hover 反馈 —— 那时色块本来就大，一点位移就会让
+      光标落到相邻块上，来回触发；用户此时是在「查看」，不需要悬浮提示。
+   ② 移出后延迟 HOVER_GRACE 再收起。色块弹出后会朝光标方向长大/前移，光标很容易
+      被挤出边缘 → 立刻收起 → 又落回来 → 再次弹出，形成高频闪烁。加宽限期即可消除。 */
+function hover(n, on){
+  if (!n.el || !n.el._front) return;
+  if (uz >= OPEN_ZOOM){                       // 放大态：只有选中态保留光晕
+    n.el._front.style.boxShadow = (selected === n) ? glow(n) : HL;
+    return;
+  }
+  clearTimeout(hoverTimer); hoverTimer = null;
+  if (on){
+    if (hoverNode && hoverNode !== n) applyHover(hoverNode, false);
+    hoverNode = n;
+    applyHover(n, true);
+  } else {
+    hoverTimer = setTimeout(()=>{
+      if (hoverNode === n){ applyHover(n, false); hoverNode = null; }
+    }, HOVER_GRACE);
+  }
+}
+function applyHover(n, on){
+  if (!n.el || !n.el._front) return;
+  n.el._front.style.boxShadow = (on || selected === n) ? glow(n) : HL;
+  if (n.expert) return;                       // 专家块不弹出，避免阵列散架
+  if (on){ if (popped !== n){ popBox(n, true); popped = n; } }
+  else if (popped === n && selected !== n){ popBox(n, false); popped = null; }
+}
+function select(n, fromDemo){
+  if (!fromDemo && demo) stopDemo();          // 演示中手动点击 → 自动接管，停止演示
+  clearTimeout(hoverTimer); hoverTimer = null;
+  if (hoverNode && hoverNode !== n){ applyHover(hoverNode, false); hoverNode = null; }
+  if (selected && selected !== n){
+    selected.el._front.style.boxShadow = HL;
+    if (!selected.expert) popBox(selected, false);
+  }
+  selected = n;
+  if (uz >= OPEN_ZOOM){                       // 放大态不做弹出，避免查看时位移
+    if (n.el._front) n.el._front.style.boxShadow = glow(n);
+    if (popped && popped !== n){ popBox(popped, false); popped = null; }
+  } else {
+    applyHover(n, true);
+    popped = n.expert ? null : n;
+  }
+  applyOpen();                                // 选中变了 → 重新决定哪一块打开内部结构
+  pDot.style.background = n.color;
+  document.getElementById('pNo').textContent = n.no + (n.star ? '　★ KEY CHANGE' : (n.expert ? '　· 专家池节点' : ''));
+  document.getElementById('pName').textContent = n.name;
+  document.getElementById('pEn').textContent = n.en || '';
+  const d = n.d;
+  let html = '';
+  if (n.expert){
+    const own = ALL.find(v=> v.fan === n.ownerKey && !v.expert);
+    if (own) html += '<div class="sec"><div class="owner" data-own="' + n.ownerKey +
+      '"><i style="background:' + own.color + '"></i>所属模块：' + own.no + ' ' + own.name + '　→ 查看主模块</div></div>';
+  }
+  html += '<div class="sec"><h4>它在做什么</h4><p>' + d.what + '</p></div>';
+  if (n.inner && n.inner.length)
+    html += '<div class="sec"><h4>模块内部结构（放大视图）</h4>' + isoStack(n.inner, n.color) +
+            '<div class="iso-cap">自下而上 = 前向计算顺序，① 最先执行</div></div>';
+  html += '<div class="sec"><h4>内部原理</h4><ul>' + d.how.map(x=>'<li>'+x+'</li>').join('') + '</ul></div>';
+  const plain = PLAIN[n.no] || (n.expert ? (n.active ? PLAIN.EXP_ON : PLAIN.EXP_OFF) : '');
+  if (plain)
+    html += '<div class="sec plain"><h4>大白话讲解<em>不用术语</em></h4><p>' + plain + '</p></div>';
+  html += '<div class="sec"><h4>关键数据</h4><div class="chips">' +
+            d.data.map(x=>'<span class="chip">'+x+'</span>').join('') + '</div></div>' +
+          (d.cmp && d.cmp !== '—'
+            ? '<div class="sec"><h4>对照 2017 版</h4><div class="cmp">' + d.cmp + '</div></div>' : '');
+  const body = document.getElementById('pBody');
+  body.innerHTML = html;
+  const ow = body.querySelector('.owner');
+  if (ow) ow.onclick = ()=>{
+    const own = ALL.find(v=> v.fan === ow.getAttribute('data-own') && !v.expert);
+    if (own) select(own);
+  };
+  const wasOpen = panel.classList.contains('open');
+  panel.classList.add('open');
+  body.scrollTop = 0;
+  panTarget = panFor();
+  if (!wasOpen) fitZoom();      // 面板吃掉右侧宽度，可用区变小必须重新拟合（否则右侧标注被面板盖住）
+  layout();
+  kick();
+}
+document.getElementById('pClose').onclick = ()=>{
+  if (selected){ selected.el._front.style.boxShadow = HL; popBox(selected, false); }
+  selected = null; popped = null; panel.classList.remove('open');
+  applyOpen();
+  panTarget = panFor();
+  fitZoom();
+  layout();
+  kick();
+};
+ALL.forEach(n=>{
+  n.el.addEventListener('click', e=>{ e.stopPropagation(); if (!justDragged) select(n); });
+  n.el.addEventListener('mouseenter', ()=> hover(n, true));
+  n.el.addEventListener('mouseleave', ()=> hover(n, false));
+});
+
+/* 拖动 = 旋转；空格 + 拖动（或 Shift + 拖动）= 自由平移，不夹边界，像无限画布 */
+function down(x, y, panMode, bySpace){
+  if (bySpace) spacePanned = true;            // 空格被用于拖动了 → keyup 时不再切换演示
+  drag = {x:x, y:y, tx:thx, ty:thy, px:upx, py:upy, pan:!!panMode, moved:false};
+  stage.classList.add('dragging'); auto = false; syncAuto();
+}
+function move(x,y){
+  if (!drag) return;
+  const dx = x - drag.x, dy = y - drag.y;
+  if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true;
+  if (drag.pan){
+    upx = drag.px + dx;                        // 不夹边界：要的就是无限画布的手感
+    upy = drag.py + dy;
+  } else {
+    thx = Math.max(-72, Math.min(72, drag.tx - dy * 0.28));
+    thy = drag.ty + dx * 0.28;
+  }
+  layout();
+}
+function up(){
+  if (drag && drag.moved){ justDragged = true; setTimeout(()=> justDragged = false, 60); }
+  drag = null; stage.classList.remove('dragging');
+}
+stage.addEventListener('mousedown', e=>{
+  e.preventDefault();                       // 双保险：CSS user-select:none 之外的兜底
+  const sel = window.getSelection();
+  if (sel && !sel.isCollapsed) sel.removeAllRanges();   // 清掉上一次残留的选中
+  down(e.clientX, e.clientY, e.shiftKey || spaceDown, spaceDown);
+});
+window.addEventListener('mousemove', e=> move(e.clientX, e.clientY));
+window.addEventListener('mouseup', up);
+stage.addEventListener('touchstart', e=>{ const t=e.touches[0]; down(t.clientX, t.clientY, false, false); }, {passive:true});
+stage.addEventListener('touchmove',  e=>{ const t=e.touches[0]; move(t.clientX, t.clientY); }, {passive:true});
+stage.addEventListener('touchend', up);
+
+/* 滚轮缩放 50%~600%，并以光标为锚点（缩放前后光标下的那块内容不动） */
+const zoomV = document.getElementById('zoomV');
+function setUz(v){
+  uz = Math.max(ZMIN, Math.min(ZMAX, v));
+  zoomV.textContent = Math.round(uz * 100) + '%';
+}
+stage.addEventListener('wheel', e=>{
+  e.preventDefault();
+  const before = uz;
+  setUz(uz * (e.deltaY > 0 ? 1/1.18 : 1.18));
+  if (uz === before) return;
+  const r = stage.getBoundingClientRect();
+  const dx = e.clientX - (r.left + r.width/2) - (panX + upx);
+  const dy = e.clientY - (r.top  + r.height/2) - upy;
+  const k  = uz / before - 1;                 // 缩放增量比例
+  upx -= k * dx;                              // 反向平移，抵消中心缩放
+  upy -= k * dy;
+  layout();
+}, {passive:false});
+
+/* 双击空白处复位缩放与平移 */
+stage.addEventListener('dblclick', e=>{
+  if (e.target.closest('.lbl') || e.target.closest('#demoHud')) return;
+  setUz(1); upx = 0; upy = 0; layout();
+});
+/* 空格一键两用：
+   单击（按下后原样松开）= 切换演示；长按不松 + 拖动 = 无限画布式自由平移。
+   所以切换演示的动作放在 keyup，并且只在「这次空格没被用于拖动」时才触发。
+   焦点在按钮/输入框上时交还给控件，否则空格会既激活控件又触发这里。 */
+let spaceDown = false, spacePanned = false;
+function spaceOwnedByWidget(){
+  const ae = document.activeElement;
+  return !!ae && (ae.tagName === 'BUTTON' || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA');
+}
+window.addEventListener('keydown', e=>{
+  const k = e.key;
+  if (k === 'Escape'){
+    if (demo || demoDone) stopDemo(); else document.getElementById('pClose').click();
+    return;
+  }
+  if (k === ' '){
+    if (spaceOwnedByWidget()) return;
+    e.preventDefault();
+    if (!e.repeat && !spaceDown){ spaceDown = true; spacePanned = false; stage.classList.add('spacepan'); }
+    return;
+  }
+  if (k === 'ArrowLeft')  { thy -= 4; layout(); }
+  if (k === 'ArrowRight') { thy += 4; layout(); }
+  if (k === 'ArrowUp')    { thx = Math.min(72, thx + 3); layout(); }
+  if (k === 'ArrowDown')  { thx = Math.max(-72, thx - 3); layout(); }
+});
+window.addEventListener('keyup', e=>{
+  if (e.key !== ' ') return;
+  const wasPanned = spacePanned;
+  spaceDown = false; spacePanned = false;
+  stage.classList.remove('spacepan');
+  if (wasPanned || spaceOwnedByWidget()) return;   // 这次空格是拿来拖动的，不切换演示
+  toggleDemo();
+});
+/* 失焦时把按住状态清掉，否则切走再回来会误判为「一直按着空格」 */
+window.addEventListener('blur', ()=>{
+  spaceDown = false; spacePanned = false; stage.classList.remove('spacepan');
+});
+window.addEventListener('resize', ()=>{
+  panTarget = selected ? panFor() : 0;
+  fitZoom();                 // 只重算 fit：uz / upx / upy 是用户视角，不因 resize 被清掉
+  layout();
+  kick();
+});
+
+const btnAuto = document.getElementById('btnAuto');
+function syncAuto(){ btnAuto.classList.toggle('act', auto); }
+// 点完按钮就还焦点给 body，避免后续空格/回车被按钮吃掉或重复触发
+document.querySelectorAll('.ctrls button').forEach(b=>{
+  b.addEventListener('click', ()=> b.blur());
+});
+btnAuto.onclick = ()=>{ auto = !auto; if (auto) phase = Math.asin(Math.max(-1,Math.min(1,(thy+14)/20))); syncAuto(); kick(); };
+document.getElementById('btnReset').onclick = ()=>{
+  thx = 21; thy = -14; upx = 0; upy = 0; setUz(1);
+  fitZoom(); auto = true; syncAuto(); layout(); kick();
+};
+document.getElementById('btnIso').onclick   = ()=>{ thx=21; thy=-14; auto=false; syncAuto(); layout(); };
+document.getElementById('btnLow').onclick   = ()=>{ thx=8;  thy=-36; auto=false; syncAuto(); layout(); };
+document.getElementById('btnTop').onclick   = ()=>{ thx=48; thy=-14; auto=false; syncAuto(); layout(); };
+
+/* ---------- 渲染循环：只在「真的需要动」时才跑 ----------
+   常驻 rAF 会让浏览器一直保持 60fps 的合成循环，即使画面完全静止也在耗 CPU/GPU。
+   所以改成按需启动：静止（无自动旋转、无平移缓动、无演示）时直接停掉，
+   任何会改变画面的操作再把它叫醒（kick）。 */
+let rafId = 0, running = false, last = 0;
+function needsLoop(){ return auto || demo || Math.abs(panX - panTarget) > 0.4; }
+function tick(ts){
+  const dt = Math.min(48, ts - last || 16);
+  last = ts;
+  let dirty = false;
+  if (auto && !drag){ phase += 0.0042 * dt / 16.7; thy = -14 + 20 * Math.sin(phase); dirty = true; }
+  if (demo){
+    const p = (performance.now() - demoStart) / DEMO_DUR;
+    dBar.style.width = Math.min(100, Math.max(0, p) * 100).toFixed(2) + '%';
+    advanceArrow(dt);                     // 跑马灯光点沿弯曲箭头跑动
+  }
+  if (Math.abs(panX - panTarget) > 0.4){ panX += (panTarget - panX) * 0.20; dirty = true; }
+  else if (panX !== panTarget){ panX = panTarget; dirty = true; }
+  if (dirty) layout();
+  if (needsLoop() && !document.hidden) rafId = requestAnimationFrame(tick);
+  else running = false;
+}
+function kick(){ if (!running && !document.hidden){ running = true; last = 0; rafId = requestAnimationFrame(tick); } }
+document.addEventListener('visibilitychange', ()=>{ if (document.hidden) running = false; else kick(); });
+window.addEventListener('resize', measureView);
+
+syncAuto();
+fitZoom();
+layout();
+kick();
+</script>
+</body>
+</html>
